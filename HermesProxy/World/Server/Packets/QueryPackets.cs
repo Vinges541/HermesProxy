@@ -49,17 +49,7 @@ public class QueryTimeResponse : ServerPacket, ISpanWritable
     public long CurrentTime;
 }
 
-class QueryPetName : ClientPacket
-{
-    public QueryPetName(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        UnitGUID = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 UnitGUID;
-}
+public readonly record struct QueryPetName(WowGuid128 UnitGUID);
 
 class QueryPetNameResponse : ServerPacket, ISpanWritable
 {
@@ -125,31 +115,9 @@ class QueryPetNameResponse : ServerPacket, ISpanWritable
     public string Name = "";
 }
 
-public class QueryPlayerName : ClientPacket
-{
-    public QueryPlayerName(WorldPacket packet) : base(packet) { }
+public readonly record struct QueryPlayerName(WowGuid128 Player);
 
-    public override void Read()
-    {
-        Player = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 Player;
-}
-
-public class QueryPlayerNames : ClientPacket
-{
-    public QueryPlayerNames(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        uint count = _worldPacket.ReadUInt32();
-        for (uint i = 0; i < count; i++)
-            Players.Add(_worldPacket.ReadPackedGuid128());
-    }
-
-    public List<WowGuid128> Players = new List<WowGuid128>();
-}
+public readonly record struct QueryPlayerNames(List<WowGuid128> Players);
 
 public class QueryPlayerNameResponse : ServerPacket, ISpanWritable
 {
@@ -312,19 +280,7 @@ public class DeclinedName
     }
 }
 
-public class QueryQuestInfo : ClientPacket
-{
-    public QueryQuestInfo(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        QuestID = _worldPacket.ReadUInt32();
-        QuestGiver = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 QuestGiver;
-    public uint QuestID;
-}
+public readonly record struct QueryQuestInfo(uint QuestID, WowGuid128 QuestGiver);
 
 public class QueryQuestInfoResponse : ServerPacket
 {
@@ -520,17 +476,7 @@ public class QueryQuestInfoResponse : ServerPacket
     public uint QuestID;
 }
 
-public class QueryCreature : ClientPacket
-{
-    public QueryCreature(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        CreatureID = _worldPacket.ReadUInt32();
-    }
-
-    public uint CreatureID;
-}
+public readonly record struct QueryCreature(uint CreatureID);
 
 public class QueryCreatureResponse : ServerPacket
 {
@@ -628,19 +574,7 @@ public class QueryCreatureResponse : ServerPacket
     public uint CreatureID;
 }
 
-public class QueryGameObject : ClientPacket
-{
-    public QueryGameObject(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        GameObjectID = _worldPacket.ReadUInt32();
-        Guid = _worldPacket.ReadPackedGuid128();
-    }
-
-    public uint GameObjectID;
-    public WowGuid128 Guid;
-}
+public readonly record struct QueryGameObject(uint GameObjectID, WowGuid128 Guid);
 
 public class QueryGameObjectResponse : ServerPacket
 {
@@ -747,19 +681,7 @@ public class GameObjectStats
     public uint ContentTuningId;
 }
 
-public class QueryPageText : ClientPacket
-{
-    public QueryPageText(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        PageTextID = _worldPacket.ReadUInt32();
-        ItemGUID = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 ItemGUID;
-    public uint PageTextID;
-}
+public readonly record struct QueryPageText(uint PageTextID, WowGuid128 ItemGUID);
 
 public class QueryPageTextResponse : ServerPacket
 {
@@ -805,19 +727,7 @@ public class QueryPageTextResponse : ServerPacket
     }
 }
 
-public class QueryNPCText : ClientPacket
-{
-    public QueryNPCText(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        TextID = _worldPacket.ReadUInt32();
-        Guid = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 Guid;
-    public uint TextID;
-}
+public readonly record struct QueryNPCText(uint TextID, WowGuid128 Guid);
 
 public class QueryNPCTextResponse : ServerPacket, ISpanWritable
 {
@@ -866,28 +776,55 @@ public class QueryNPCTextResponse : ServerPacket, ISpanWritable
     public uint[] BroadcastTextID = new uint[8];
 }
 
-public class WhoRequestPkt : ClientPacket
-{
-    public WhoRequestPkt(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        uint areasCount = _worldPacket.ReadBits<uint>(4);
-
-        Request.Read(_worldPacket);
-        RequestID = _worldPacket.ReadUInt32();
-
-        for (int i = 0; i < areasCount; ++i)
-            Areas.Add(_worldPacket.ReadInt32());
-    }
-
-    public WhoRequest Request = new();
-    public uint RequestID;
-    public List<int> Areas = new();
-}
+/// <remarks>
+/// Holds <see cref="WhoRequest"/> by reference. It carries a non-zero default — ClassFilter is
+/// -1, meaning "any class" — and flattening it into a positional record struct would make that
+/// default a zero, which is the Warrior class id.
+/// </remarks>
+public readonly record struct WhoRequestPkt(WhoRequest Request, uint RequestID, List<int> Areas);
 
 public class WhoRequest
 {
+    /// <remarks>
+    /// Span twin of <see cref="Read(WorldPacket)"/>. The five bit lengths are all read before any
+    /// of their strings and the words list sits between them and the names, so the two bodies
+    /// must stay in step field for field.
+    /// </remarks>
+    public void Read(ref SpanPacketReader data)
+    {
+        MinLevel = data.ReadInt32();
+        MaxLevel = data.ReadInt32();
+        RaceFilter = data.ReadInt64();
+        ClassFilter = data.ReadInt32();
+
+        uint nameLength = data.ReadBits<uint>(6);
+        uint virtualRealmNameLength = data.ReadBits<uint>(9);
+        uint guildNameLength = data.ReadBits<uint>(7);
+        uint guildVirtualRealmNameLength = data.ReadBits<uint>(9);
+        uint wordsCount = data.ReadBits<uint>(3);
+
+        ShowEnemies = data.HasBit();
+        ShowArenaPlayers = data.HasBit();
+        ExactName = data.HasBit();
+        if (data.HasBit())
+            ServerInfo = new();
+        data.ResetBitPos();
+
+        for (int i = 0; i < wordsCount; ++i)
+        {
+            Words.Add(data.ReadString(data.ReadBits<uint>(7)));
+            data.ResetBitPos();
+        }
+
+        Name = data.ReadString(nameLength);
+        VirtualRealmName = data.ReadString(virtualRealmNameLength);
+        Guild = data.ReadString(guildNameLength);
+        GuildVirtualRealmName = data.ReadString(guildVirtualRealmNameLength);
+
+        if (ServerInfo != null)
+            ServerInfo.Read(ref data);
+    }
+
     public void Read(WorldPacket data)
     {
         MinLevel = data.ReadInt32();
@@ -940,6 +877,14 @@ public class WhoRequest
 
 public class WhoRequestServerInfo
 {
+    /// <remarks>Span twin; kept in step with the ByteBuffer form below.</remarks>
+    public void Read(ref SpanPacketReader data)
+    {
+        FactionGroup = data.ReadInt32();
+        Locale = data.ReadInt32();
+        RequesterVirtualRealmAddress = data.ReadUInt32();
+    }
+
     public void Read(WorldPacket data)
     {
         FactionGroup = data.ReadInt32();
@@ -994,17 +939,7 @@ public class WhoEntry
     public bool IsGM;
 }
 
-class ItemTextQuery : ClientPacket
-{
-    public ItemTextQuery(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Id = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 Id = WowGuid128.Empty;
-}
+public readonly record struct ItemTextQuery(WowGuid128 Id);
 
 class QueryItemTextResponse : ServerPacket
 {

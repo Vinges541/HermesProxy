@@ -1,4 +1,5 @@
 ﻿using HermesProxy.Enums;
+using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -10,8 +11,8 @@ namespace HermesProxy.World.Client;
 public partial class WorldClient
 {
     // Handlers for SMSG opcodes coming the legacy world server
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_QUERY_RESPONSE)]
-    void HandleArenaTeamQueryResponse(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_QUERY_RESPONSE)]
+    internal void HandleArenaTeamQueryResponse(WorldPacket packet)
     {
         uint teamId = packet.ReadUInt32();
         ArenaTeamData? team;
@@ -28,10 +29,29 @@ public partial class WorldClient
         team.EmblemColor = packet.ReadUInt32();
         team.BorderStyle = packet.ReadUInt32();
         team.BorderColor = packet.ReadUInt32();
+
+        // Forward it as well as caching it. The modern client is never told the team exists
+        // otherwise: it does not send CMSG_ARENA_TEAM_QUERY on 3.4.3, which was the only thing
+        // that turned this cache into a packet, so the roster below arrived describing members of
+        // a team the client had no name, size or emblem for — and the arena panel rendered three
+        // empty brackets. Legacy order is QUERY_RESPONSE -> STATS -> ROSTER, so sending here puts
+        // the team identity ahead of its members.
+        ArenaTeamQueryResponse response = new ArenaTeamQueryResponse();
+        response.TeamId = teamId;
+        response.Emblem = new ArenaTeamEmblem();
+        response.Emblem.TeamId = teamId;
+        response.Emblem.TeamSize = team.TeamSize;
+        response.Emblem.BackgroundColor = team.BackgroundColor;
+        response.Emblem.EmblemStyle = team.EmblemStyle;
+        response.Emblem.EmblemColor = team.EmblemColor;
+        response.Emblem.BorderStyle = team.BorderStyle;
+        response.Emblem.BorderColor = team.BorderColor;
+        response.Emblem.TeamName = team.Name;
+        SendPacketToClient(response);
     }
 
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_STATS)]
-    void HandleArenaTeamStats(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_STATS)]
+    internal void HandleArenaTeamStats(WorldPacket packet)
     {
         uint teamId = packet.ReadUInt32();
         ArenaTeamData? team;
@@ -49,15 +69,18 @@ public partial class WorldClient
         team.Rank = packet.ReadUInt32();
     }
 
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_ROSTER)]
-    void HandleArenaTeamRoster(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_ROSTER)]
+    internal void HandleArenaTeamRoster(WorldPacket packet)
     {
         ArenaTeamRosterResponse arena = new ArenaTeamRosterResponse();
         arena.TeamId = packet.ReadUInt32();
 
+        // The flag and the two per-member floats below arrived together in 3.0.8; reading the
+        // flag without keeping it left the floats unconsumed, so on a 3.3.5a roster every member
+        // after the first was read 8 bytes out of alignment.
         var hiddenRating = false;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_8_9464))
-            packet.ReadBool();
+            hiddenRating = packet.ReadBool();
 
         var count = packet.ReadUInt32();
         arena.TeamSize = packet.ReadUInt32();
@@ -102,8 +125,8 @@ public partial class WorldClient
         SendPacketToClient(arena);
     }
 
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_EVENT)]
-    void HandleArenaTeamEvent(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_EVENT)]
+    internal void HandleArenaTeamEvent(WorldPacket packet)
     {
         ArenaTeamEvent arena = new ArenaTeamEvent();
         var eventType = (ArenaTeamEventLegacy)packet.ReadUInt8();
@@ -130,8 +153,8 @@ public partial class WorldClient
         SendPacketToClient(arena);
     }
 
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_COMMAND_RESULT)]
-    void HandleArenaTeamCommandResult(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_COMMAND_RESULT)]
+    internal void HandleArenaTeamCommandResult(WorldPacket packet)
     {
         ArenaTeamCommandResult arena = new ArenaTeamCommandResult();
         arena.Action = (ArenaTeamCommandType)packet.ReadUInt32();
@@ -142,8 +165,8 @@ public partial class WorldClient
         SendPacketToClient(arena);
     }
 
-    [PacketHandler(Opcode.SMSG_ARENA_TEAM_INVITE)]
-    void HandleArenaTeamInvite(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_ARENA_TEAM_INVITE)]
+    internal void HandleArenaTeamInvite(WorldPacket packet)
     {
         ArenaTeamInvite arena = new ArenaTeamInvite();
         arena.PlayerName = packet.ReadCString();

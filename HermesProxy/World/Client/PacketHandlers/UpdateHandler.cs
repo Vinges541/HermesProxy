@@ -3,6 +3,7 @@
 using Framework.GameMath;
 using Framework.Logging;
 using HermesProxy.Enums;
+using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
@@ -97,8 +98,8 @@ public partial class WorldClient
     }
 
     // Handlers for SMSG opcodes coming the legacy world server
-    [PacketHandler(Opcode.SMSG_DESTROY_OBJECT)]
-    void HandleDestroyObject(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_DESTROY_OBJECT)]
+    internal void HandleDestroyObject(WorldPacket packet)
     {
         WowGuid128 guid = packet.ReadGuid().To128(GetSession().GameState);
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
@@ -184,8 +185,8 @@ public partial class WorldClient
         }
     }
 
-    [PacketHandler(Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)]
-    void HandleCompressedUpdateObject(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)]
+    internal void HandleCompressedUpdateObject(WorldPacket packet)
     {
         using (var packet2 = packet.Inflate(packet.ReadInt32()))
         {
@@ -288,8 +289,8 @@ public partial class WorldClient
         _ => false,
     };
 
-    [PacketHandler(Opcode.SMSG_UPDATE_OBJECT)]
-    void HandleUpdateObject(WorldPacket packet)
+    [HandlesSmsg(Opcode.SMSG_UPDATE_OBJECT)]
+    internal void HandleUpdateObject(WorldPacket packet)
     {
         var count = packet.ReadUInt32();
         PrintString($"Updates Count = {count}");
@@ -3336,7 +3337,7 @@ public partial class WorldClient
             if (PLAYER_GUILDID >= 0 && updateMaskArray[PLAYER_GUILDID])
             {
                 GetSession().GameState.StorePlayerGuildId(guid, updates[PLAYER_GUILDID].UInt32Value);
-                updateData.UnitData.GuildGUID = WowGuid128.Create(HighGuidType703.Guild, updates[PLAYER_GUILDID].UInt32Value);
+                updateData.UnitData.GuildGUID = WowGuid128.CreateGuildOrEmpty(updates[PLAYER_GUILDID].UInt32Value);
             }
             int PLAYER_GUILDRANK = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILDRANK);
             if (PLAYER_GUILDRANK >= 0 && updateMaskArray[PLAYER_GUILDRANK])
@@ -4106,6 +4107,16 @@ public partial class WorldClient
 
                         if (teamId != 0)
                         {
+                            // A bracket the player has a team in exists from the moment the team
+                            // does, before a single rated game. Without an element here there is
+                            // nothing for the PvpInfo descriptor to send, so the client is never
+                            // told the bracket changed and the arena panel's tile never repaints —
+                            // a new team's stats are all zero, which is indistinguishable from
+                            // "no team" unless the element itself is present.
+                            if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                                updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
+                            updateData.EnsureActivePlayerData().PvpInfo[i].Bracket = (sbyte)i;
+
                             WorldPacket packet = new WorldPacket(Opcode.CMSG_ARENA_TEAM_QUERY);
                             packet.WriteUInt32(teamId);
                             SendPacketToServer(packet);
@@ -4122,42 +4133,41 @@ public partial class WorldClient
                         }
                     }
                     
-                    /*
-                    if (updateMaskArray[startOffset + teamMemberOffset])
-                    {
-                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
-                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
-
-                        updateData.EnsureActivePlayerData().PvpInfo[i].Captain = updates[startOffset + teamMemberOffset].Int32Value;
-                    }
-                    */
                     if (updateMaskArray[startOffset + teamGamesWeekOffset])
                     {
                         if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
                             updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Bracket = (sbyte)i;
 
                         updateData.EnsureActivePlayerData().PvpInfo[i].WeeklyPlayed = updates[startOffset + teamGamesWeekOffset].UInt32Value;
+                        GetSession().GameState.CurrentArenaBrackets[i].WeeklyPlayed = updates[startOffset + teamGamesWeekOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamGamesSeasonOffset])
                     {
                         if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
                             updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Bracket = (sbyte)i;
 
                         updateData.EnsureActivePlayerData().PvpInfo[i].SeasonPlayed = updates[startOffset + teamGamesSeasonOffset].UInt32Value;
+                        GetSession().GameState.CurrentArenaBrackets[i].SeasonPlayed = updates[startOffset + teamGamesSeasonOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamWinsSeasonOffset])
                     {
                         if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
                             updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Bracket = (sbyte)i;
 
                         updateData.EnsureActivePlayerData().PvpInfo[i].SeasonWon = updates[startOffset + teamWinsSeasonOffset].UInt32Value;
+                        GetSession().GameState.CurrentArenaBrackets[i].SeasonWon = updates[startOffset + teamWinsSeasonOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamPersonalRatingOffset])
                     {
                         if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
                             updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Bracket = (sbyte)i;
 
                         updateData.EnsureActivePlayerData().PvpInfo[i].Rating = updates[startOffset + teamPersonalRatingOffset].UInt32Value;
+                        GetSession().GameState.CurrentArenaBrackets[i].PersonalRating = updates[startOffset + teamPersonalRatingOffset].UInt32Value;
                     }
                 }
             }
@@ -4759,7 +4769,7 @@ public partial class WorldClient
             int CORPSE_FIELD_GUILD = LegacyVersion.GetUpdateField(CorpseField.CORPSE_FIELD_GUILD);
             if (CORPSE_FIELD_GUILD >= 0 && updateMaskArray[CORPSE_FIELD_GUILD])
             {
-                updateData.CorpseData.GuildGUID = WowGuid128.Create(HighGuidType703.Guild, updates[CORPSE_FIELD_GUILD].UInt32Value);
+                updateData.CorpseData.GuildGUID = WowGuid128.CreateGuildOrEmpty(updates[CORPSE_FIELD_GUILD].UInt32Value);
             }
             int CORPSE_FIELD_FLAGS = LegacyVersion.GetUpdateField(CorpseField.CORPSE_FIELD_FLAGS);
             if (CORPSE_FIELD_FLAGS >= 0 && updateMaskArray[CORPSE_FIELD_FLAGS])

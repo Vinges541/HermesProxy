@@ -29,24 +29,7 @@ using System.Text;
 
 namespace HermesProxy.World.Server.Packets;
 
-public class JoinChannel : ClientPacket
-{
-    public JoinChannel(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        ChatChannelId = _worldPacket.ReadInt32();
-        uint channelLength = _worldPacket.ReadBits<uint>(7);
-        uint passwordLength = _worldPacket.ReadBits<uint>(7);
-        _worldPacket.ResetBitPos();
-        ChannelName = _worldPacket.ReadString(channelLength);
-        Password = _worldPacket.ReadString(passwordLength);
-    }
-
-    public string Password = string.Empty;
-    public string ChannelName = string.Empty;
-    public int ChatChannelId;
-}
+public readonly record struct JoinChannel(int ChatChannelId, string ChannelName, string Password);
 
 public class ChannelNotifyJoined : ServerPacket, ISpanWritable
 {
@@ -98,19 +81,7 @@ public class ChannelNotifyJoined : ServerPacket, ISpanWritable
     public WowGuid128 ChannelGUID;
 }
 
-public class LeaveChannel : ClientPacket
-{
-    public LeaveChannel(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        ZoneChannelID = _worldPacket.ReadInt32();
-        ChannelName = _worldPacket.ReadString(_worldPacket.ReadBits<uint>(7));
-    }
-
-    public int ZoneChannelID;
-    public string ChannelName = string.Empty;
-}
+public readonly record struct LeaveChannel(int ZoneChannelID, string ChannelName);
 
 public class ChannelNotifyLeft : ServerPacket, ISpanWritable
 {
@@ -148,17 +119,7 @@ public class ChannelNotifyLeft : ServerPacket, ISpanWritable
     public bool Suspended;
 }
 
-class ChannelCommand : ClientPacket
-{
-    public ChannelCommand(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        ChannelName = _worldPacket.ReadString(_worldPacket.ReadBits<uint>(7));
-    }
-
-    public string ChannelName = string.Empty;
-}
+public readonly record struct ChannelCommand(string ChannelName);
 
 public class ChannelListResponse : ServerPacket, ISpanWritable
 {
@@ -230,206 +191,25 @@ public class ChannelListResponse : ServerPacket, ISpanWritable
     }
 }
 
-public class ChatMessageAFK : ClientPacket
-{
-    public ChatMessageAFK(WorldPacket packet) : base(packet) { }
+public readonly record struct ChatMessageAFK(string Text);
 
-    public override void Read()
-    {
-        // V3_4_3 widened the length to 11 bits (per WPP V3_4_0_45166
-        // ChatHandler.cs:86-93). Pre-V3_4_3 modern clients used 9 bits.
-        uint len = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
-            ? _worldPacket.ReadBits<uint>(11)
-            : _worldPacket.ReadBits<uint>(9);
-        Text = _worldPacket.ReadString(len);
-    }
+public readonly record struct ChatMessageDND(string Text);
 
-    public string Text = string.Empty;
-}
+public readonly record struct ChatMessageChannel(uint Language, WowGuid128 ChannelGUID, string Target, string Text, bool IsSecure);
 
-public class ChatMessageDND : ClientPacket
-{
-    public ChatMessageDND(WorldPacket packet) : base(packet) { }
+public readonly record struct ChatMessageWhisper(uint Language, string Target, string Text);
 
-    public override void Read()
-    {
-        uint len = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
-            ? _worldPacket.ReadBits<uint>(11)
-            : _worldPacket.ReadBits<uint>(9);
-        Text = _worldPacket.ReadString(len);
-    }
+public readonly record struct ChatMessageEmote(string Text);
 
-    public string Text = string.Empty;
-}
+public readonly record struct ChatMessage(uint Language, string Text, bool IsSecure);
 
-public class ChatMessageChannel : ClientPacket
-{
-    public ChatMessageChannel(WorldPacket packet) : base(packet) { }
+public readonly record struct ChatAddonMessageParams(
+    string Prefix, string Text, ChatMessageTypeModern Type, bool IsLogged);
 
-    public override void Read()
-    {
-        Language = _worldPacket.ReadUInt32();
-        ChannelGUID = _worldPacket.ReadPackedGuid128();
+public readonly record struct ChatAddonMessage(ChatAddonMessageParams Params);
 
-        // V3_4_3 writes the text length as 11 bits, not 9, and follows the two lengths
-        // with a conditional secure-flag bit pair (TC 3.4.3 ChatMessageChannel::Read).
-        // Bit reads are MSB-first, so reading 9 bits of an 11-bit length yields len >> 2 —
-        // "gooday" (6) came through as 1 and the client posted "g". Messages of 1-3
-        // characters read as length 0 and post nothing at all. Same hazard as the one
-        // already handled in ChatMessage and ChatMessageWhisper above; this packet was
-        // missed when those were fixed. Issue #177.
-        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-        {
-            uint targetLen343 = _worldPacket.ReadBits<uint>(9);
-            uint textLen343 = _worldPacket.ReadBits<uint>(11);
-            if (_worldPacket.HasBit())
-                IsSecure = _worldPacket.HasBit();
-            Target = _worldPacket.ReadString(targetLen343);
-            Text = _worldPacket.ReadString(textLen343);
-            return;
-        }
-
-        uint targetLen = _worldPacket.ReadBits<uint>(9);
-        uint textLen = _worldPacket.ReadBits<uint>(9);
-        Target = _worldPacket.ReadString(targetLen);
-        Text = _worldPacket.ReadString(textLen);
-    }
-
-    public uint Language;
-    public WowGuid128 ChannelGUID;
-    public string Text = string.Empty;
-    public string Target = string.Empty;
-    public bool IsSecure;
-}
-
-public class ChatMessageWhisper : ClientPacket
-{
-    public ChatMessageWhisper(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Language = _worldPacket.ReadUInt32();
-
-        // V3_4_3 has no TargetGUID (V3_4_4+). Text length is 11 bits, same as SAY.
-        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-        {
-            uint targetLen = _worldPacket.ReadBits<uint>(9);
-            uint textLen = _worldPacket.ReadBits<uint>(11);
-            Target = _worldPacket.ReadString(targetLen);
-            Text = _worldPacket.ReadString(textLen);
-        }
-        else
-        {
-            uint targetLen = _worldPacket.ReadBits<uint>(9);
-            uint textLen = _worldPacket.ReadBits<uint>(9);
-            Target = _worldPacket.ReadString(targetLen);
-            Text = _worldPacket.ReadString(textLen);
-        }
-    }
-
-    public uint Language = 0;
-    public string Text = string.Empty;
-    public string Target = string.Empty;
-}
-
-public class ChatMessageEmote : ClientPacket
-{
-    public ChatMessageEmote(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        // V3_4_3 widened the length to 11 bits — same DND/EMOTE/AFK group
-        // (WPP V3_4_0_45166 ChatHandler.cs:86-93). Reading 9 bits truncates
-        // the text and leaves the bit cursor mid-byte, so the legacy server
-        // sees a malformed CMSG_MESSAGECHAT and replies "unknown language".
-        uint len = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
-            ? _worldPacket.ReadBits<uint>(11)
-            : _worldPacket.ReadBits<uint>(9);
-        Text = _worldPacket.ReadString(len);
-    }
-
-    public string Text = string.Empty;
-}
-
-public class ChatMessage : ClientPacket
-{
-    public ChatMessage(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Language = _worldPacket.ReadUInt32();
-
-        // V3_4_3 widened the length to 11 bits and added a trailing IsSecure
-        // bit AFTER the length (per WPP V3_4_0_45166 ChatHandler.cs:233-238).
-        // The pre-V3_4_3 modern clients used a 9-bit length with no IsSecure.
-        // Reading the wrong layout leaves the packet bytes short and the text
-        // shifted, so HandleChatMessage sees garbage and chat / GM commands
-        // silently fail.
-        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-        {
-            uint len = _worldPacket.ReadBits<uint>(11);
-            IsSecure = _worldPacket.HasBit();
-            Text = _worldPacket.ReadString(len);
-        }
-        else
-        {
-            uint len = _worldPacket.ReadBits<uint>(9);
-            Text = _worldPacket.ReadString(len);
-        }
-    }
-
-    public string Text = string.Empty;
-    public uint Language;
-    public bool IsSecure;
-}
-
-public class ChatAddonMessage : ClientPacket
-{
-    public ChatAddonMessage(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Params.Read(_worldPacket);
-    }
-
-    public ChatAddonMessageParams Params = new();
-}
-
-class ChatAddonMessageTargeted : ClientPacket
-{
-    public ChatAddonMessageTargeted(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        uint targetLen = _worldPacket.ReadBits<uint>(9);
-        Params.Read(_worldPacket);
-        ChannelGuid = _worldPacket.ReadPackedGuid128();
-        Target = _worldPacket.ReadString(targetLen);
-    }
-
-    public ChatAddonMessageParams Params = new();
-    public WowGuid128 ChannelGuid;
-    public string Target = string.Empty;
-}
-
-public class ChatAddonMessageParams
-{
-    public void Read(WorldPacket data)
-    {
-        data.ResetBitPos();
-        uint prefixLen = data.ReadBits<uint>(5);
-        uint textLen = data.ReadBits<uint>(8);
-        IsLogged = data.HasBit();
-        Type = (ChatMessageTypeModern)data.ReadInt32();
-        Prefix = data.ReadString(prefixLen);
-        Text = data.ReadString(textLen);
-    }
-
-    public string Prefix = string.Empty;
-    public string Text = string.Empty;
-    public ChatMessageTypeModern Type;
-    public bool IsLogged;
-}
+public readonly record struct ChatAddonMessageTargeted(
+    ChatAddonMessageParams Params, WowGuid128 ChannelGuid, string Target);
 
 public class ChatPkt : ServerPacket, ISpanWritable
 {
@@ -740,32 +520,13 @@ public class EmoteMessage : ServerPacket, ISpanWritable
     public List<uint> SpellVisualKitIDs = new();
 }
 
-public class CTextEmote : ClientPacket
-{
-    public CTextEmote(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Target = _worldPacket.ReadPackedGuid128();
-        EmoteID = _worldPacket.ReadInt32();
-        SoundIndex = _worldPacket.ReadInt32();
-
-        if (ModernVersion.AddedInVersion(9, 0, 5, 1, 14, 0, 2, 5, 1))
-        {
-            SpellVisualKitIDs = new uint[_worldPacket.ReadUInt32()];
-            if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
-                SequenceVariation = _worldPacket.ReadInt32();
-            for (var i = 0; i < SpellVisualKitIDs.Length; ++i)
-                SpellVisualKitIDs[i] = _worldPacket.ReadUInt32();
-        }
-    }
-
-    public WowGuid128 Target;
-    public int EmoteID;
-    public int SoundIndex;
-    public int SequenceVariation;
-    public uint[] SpellVisualKitIDs = Array.Empty<uint>();
-}
+/// <remarks>
+/// The two trailing fields are read on newer builds only and the handler forwards none of them —
+/// 3.3.5a's CMSG_SEND_TEXT_EMOTE is emote, sound and target. They are kept so the codec still
+/// consumes the whole packet on the builds that send them.
+/// </remarks>
+public readonly record struct CTextEmote(
+    WowGuid128 Target, int EmoteID, int SoundIndex, int SequenceVariation, uint[] SpellVisualKitIDs);
 
 public class STextEmote : ServerPacket, ISpanWritable
 {
@@ -923,17 +684,4 @@ class ChatServerMessage : ServerPacket, ISpanWritable
     public string StringParam = "";
 }
 
-class ChatRegisterAddonPrefixes : ClientPacket
-{
-    public ChatRegisterAddonPrefixes(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        int count = _worldPacket.ReadInt32();
-
-        for (int i = 0; i < count && i < 64; ++i)
-            Prefixes.Add(_worldPacket.ReadString(_worldPacket.ReadBits<uint>(5)));
-    }
-
-    public List<string> Prefixes = new List<string>();
-}
+public readonly record struct ChatRegisterAddonPrefixes(List<string> Prefixes);

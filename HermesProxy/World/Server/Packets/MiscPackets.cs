@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using Framework.Constants;
+using HermesProxy.Enums;
 using Framework.GameMath;
 using Framework.IO;
 using HermesProxy.World.Enums;
@@ -27,23 +28,11 @@ using HermesProxy.World.Objects;
 
 namespace HermesProxy.World.Server.Packets;
 
-public class EmptyClientPacket : ClientPacket
-{
-    public EmptyClientPacket(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        // Was a Trace.Assert, which is compiled into Release and aborts the process rather
-        // than throwing. This type backs a lot of client-facing handlers, so any client
-        // sending a payload we expect to be empty took the whole proxy down. Unread bytes
-        // mean our layout is wrong, which is worth knowing but never worth aborting for.
-        if (_worldPacket.CanRead())
-        {
-            Log.Print(LogType.Debug,
-                $"Expected an empty payload for opcode {_worldPacket.GetUniversalOpcode(isModern: true)} but {_worldPacket.Remaining()} bytes remain.");
-        }
-    }
-}
+/// <summary>
+/// A message whose opcode is the whole content. Shared by every empty-payload CMSG, because the
+/// type carries no information — the opcode does, and shape-B systems receive it as a parameter.
+/// </summary>
+public readonly record struct EmptyClientPacket;
 
 public class BindPointUpdate : ServerPacket, ISpanWritable
 {
@@ -117,20 +106,7 @@ public class ServerTimeOffset : ServerPacket, ISpanWritable
     public long Time;
 }
 
-public class TutorialSetFlag : ClientPacket
-{
-    public TutorialSetFlag(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Action = (TutorialAction)_worldPacket.ReadBits<byte>(2);
-        if (Action == TutorialAction.Update)
-            TutorialBit = _worldPacket.ReadUInt32();
-    }
-
-    public TutorialAction Action;
-    public uint TutorialBit;
-}
+public readonly record struct TutorialSetFlag(TutorialAction Action, uint TutorialBit);
 
 public class TutorialFlags : ServerPacket, ISpanWritable
 {
@@ -368,19 +344,7 @@ public class TimeSyncRequest : ServerPacket, ISpanWritable
     public uint SequenceIndex;
 }
 
-public class TimeSyncResponse : ClientPacket
-{
-    public TimeSyncResponse(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        SequenceIndex = _worldPacket.ReadUInt32();
-        ClientTime = _worldPacket.ReadUInt32();
-    }
-
-    public uint ClientTime; // Client ticks in ms
-    public uint SequenceIndex; // Same index as in request
-}
+public readonly record struct TimeSyncResponse(uint SequenceIndex, uint ClientTime);
 
 public class WeatherPkt : ServerPacket, ISpanWritable
 {
@@ -466,21 +430,7 @@ public class LoginSetTimeSpeed : ServerPacket, ISpanWritable
     public int GameTimeHolidayOffset;
 }
 
-class AreaTriggerPkt : ClientPacket
-{
-    public AreaTriggerPkt(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        AreaTriggerID = _worldPacket.ReadUInt32();
-        Entered = _worldPacket.HasBit();
-        FromClient = _worldPacket.HasBit();
-    }
-
-    public uint AreaTriggerID;
-    public bool Entered;
-    public bool FromClient;
-}
+public readonly record struct AreaTriggerPkt(uint AreaTriggerID, bool Entered, bool FromClient);
 
 class AreaTriggerMessage : ServerPacket, ISpanWritable
 {
@@ -503,17 +453,7 @@ class AreaTriggerMessage : ServerPacket, ISpanWritable
     public uint AreaTriggerID = 0;
 }
 
-public class SetSelection : ClientPacket
-{
-    public SetSelection(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        TargetGUID = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 TargetGUID;
-}
+public readonly record struct SetSelection(WowGuid128 TargetGUID);
 
 public class WorldServerInfo : ServerPacket, ISpanWritable
 {
@@ -573,17 +513,7 @@ public class WorldServerInfo : ServerPacket, ISpanWritable
     public uint? InstanceGroupSize;
 }
 
-public class SetDungeonDifficulty : ClientPacket
-{
-    public SetDungeonDifficulty(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        DifficultyID = _worldPacket.ReadUInt32();
-    }
-
-    public uint DifficultyID;
-}
+public readonly record struct SetDungeonDifficulty(uint DifficultyID);
 
 public class DungeonDifficultySet : ServerPacket, ISpanWritable
 {
@@ -606,20 +536,7 @@ public class DungeonDifficultySet : ServerPacket, ISpanWritable
     public int DifficultyID;
 }
 
-public class SetRaidDifficulty : ClientPacket
-{
-    public SetRaidDifficulty(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        DifficultyID = _worldPacket.ReadInt32();
-        if (_worldPacket.CanRead())
-            Legacy = _worldPacket.ReadUInt8();
-    }
-
-    public int DifficultyID;
-    public byte Legacy;
-}
+public readonly record struct SetRaidDifficulty(int DifficultyID, byte Legacy);
 
 public class RaidDifficultySet : ServerPacket, ISpanWritable
 {
@@ -738,29 +655,9 @@ public class InitialSetup : ServerPacket, ISpanWritable
     public byte ServerExpansionTier;
 }
 
-public class RepopRequest : ClientPacket
-{
-    public RepopRequest(WorldPacket packet) : base(packet) { }
+public readonly record struct RepopRequest(bool CheckInstance);
 
-    public override void Read()
-    {
-        CheckInstance = _worldPacket.HasBit();
-    }
-
-    public bool CheckInstance;
-}
-
-public class QueryCorpseLocationFromClient : ClientPacket
-{
-    public QueryCorpseLocationFromClient(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Player = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 Player;
-}
+public readonly record struct QueryCorpseLocationFromClient(WowGuid128 Player);
 
 public class CorpseLocation : ServerPacket, ISpanWritable
 {
@@ -846,29 +743,9 @@ public class PreRessurect : ServerPacket, ISpanWritable
     public WowGuid128 PlayerGUID;
 }
 
-public class ReclaimCorpse : ClientPacket
-{
-    public ReclaimCorpse(WorldPacket packet) : base(packet) { }
+public readonly record struct ReclaimCorpse(WowGuid128 CorpseGUID);
 
-    public override void Read()
-    {
-        CorpseGUID = _worldPacket.ReadPackedGuid128();
-    }
-
-    public WowGuid128 CorpseGUID;
-}
-
-public class StandStateChange : ClientPacket
-{
-    public StandStateChange(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        StandState = _worldPacket.ReadUInt32();
-    }
-
-    public uint StandState;
-}
+public readonly record struct StandStateChange(uint StandState);
 
 public class StandStateUpdate : ServerPacket, ISpanWritable
 {
@@ -1026,52 +903,19 @@ public class TriggerCinematic : ServerPacket, ISpanWritable
     public uint CinematicID;
 }
 
-class ClientCinematicPkt : ClientPacket
-{
-    public ClientCinematicPkt(WorldPacket packet) : base(packet) { }
-
-    public override void Read() { }
-}
+public readonly record struct ClientCinematicPkt;
 
 // Modern V3_4_3 client emits CMSG_REQUEST_VEHICLE_EXIT / _PREV_SEAT / _NEXT_SEAT
 // with no payload (verified via CypherCore Source/Game/Networking/Packets/VehiclePackets.cs).
 // Legacy 3.3.5a CMSG_REQUEST_VEHICLE_EXIT also reads no payload — TC's HandleRequestVehicleExit
 // resolves the vehicle from session state. One empty class covers all three opcodes.
-class RequestVehicleSeatChange : ClientPacket
-{
-    public RequestVehicleSeatChange(WorldPacket packet) : base(packet) { }
+public readonly record struct RequestVehicleSeatChange;
 
-    public override void Read() { }
-}
+public readonly record struct FarSight(bool Enable);
 
-class FarSight : ClientPacket
-{
-    public FarSight(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Enable = _worldPacket.HasBit();
-    }
-
-    public bool Enable;
-}
-
-class MountSpecial : ClientPacket
-{
-    public MountSpecial(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        SpellVisualKitIDs = new int[_worldPacket.ReadUInt32()];
-        if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
-            SequenceVariation = _worldPacket.ReadInt32();
-        for (var i = 0; i < SpellVisualKitIDs.Length; ++i)
-            SpellVisualKitIDs[i] = _worldPacket.ReadInt32();
-    }
-
-    public int[] SpellVisualKitIDs = Array.Empty<int>();
-    public int SequenceVariation;
-}
+/// <remarks>The handler forwards none of this — 3.3.5a's CMSG_MOUNT_SPECIAL_ANIM has no body at
+/// all — but the fields are still read so the codec consumes the whole packet.</remarks>
+public readonly record struct MountSpecial(int[] SpellVisualKitIDs, int SequenceVariation);
 
 class SpecialMountAnim : ServerPacket, ISpanWritable
 {
@@ -1294,8 +1138,35 @@ public class SeasonInfo : ServerPacket, ISpanWritable
 {
     public SeasonInfo() : base(Opcode.SMSG_SEASON_INFO) { }
 
+    /// <remarks>
+    /// V3_4_3 carries a sixth int32 the later layout folded away, and orders the two Mythic+ ids
+    /// ahead of the arena pair. Writing the shorter form left the client four bytes short: it read
+    /// PvpSeasonID and the trailing bit off the end of the packet, and the two arena seasons landed
+    /// one slot early, so CurrentSeason arrived as a Mythic+ id and PreviousSeason as the current
+    /// arena season.
+    /// <para>
+    /// Ground truth is the native 3.4.3 wire, 25 bytes in every capture under
+    /// <c>refs/native-captures/</c> - e.g. wintergrasp #127:
+    /// <c>00000000 00000000 20000000 1F000000 00000000 00000000 00</c>, i.e. two zero Mythic+ ids,
+    /// arena season 32, previous 31, then two zeros and the flushed bit byte. Wrathion writes the
+    /// same seven fields in <c>WorldPackets::Battleground::SeasonInfo::Write</c>.
+    /// </para>
+    /// </remarks>
     public override void Write()
     {
+        if (PvpWire.IsV343)
+        {
+            _worldPacket.WriteInt32(MythicPlusDisplaySeasonID);
+            _worldPacket.WriteInt32(MythicPlusSeasonID);
+            _worldPacket.WriteInt32(CurrentSeason);
+            _worldPacket.WriteInt32(PreviousSeason);
+            _worldPacket.WriteInt32(ConquestWeeklyProgressCurrencyID);
+            _worldPacket.WriteInt32(PvpSeasonID);
+            _worldPacket.WriteBit(WeeklyRewardChestsEnabled);
+            _worldPacket.FlushBits();
+            return;
+        }
+
         _worldPacket.WriteInt32(MythicPlusSeasonID);
         _worldPacket.WriteInt32(CurrentSeason);
         _worldPacket.WriteInt32(PreviousSeason);
@@ -1305,11 +1176,26 @@ public class SeasonInfo : ServerPacket, ISpanWritable
         _worldPacket.FlushBits();
     }
 
-    public int MaxSize => 21; // 5 ints + 1 byte for bit
+    public int MaxSize => 25; // 6 ints + 1 byte for the flushed bit (V3_4_3); older builds write 21
 
+    /// <remarks>Kept in lockstep with <see cref="Write"/>; see the remarks there.</remarks>
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
+
+        if (PvpWire.IsV343)
+        {
+            writer.WriteInt32(MythicPlusDisplaySeasonID);
+            writer.WriteInt32(MythicPlusSeasonID);
+            writer.WriteInt32(CurrentSeason);
+            writer.WriteInt32(PreviousSeason);
+            writer.WriteInt32(ConquestWeeklyProgressCurrencyID);
+            writer.WriteInt32(PvpSeasonID);
+            writer.WriteBit(WeeklyRewardChestsEnabled);
+            writer.FlushBits();
+            return writer.Position;
+        }
+
         writer.WriteInt32(MythicPlusSeasonID);
         writer.WriteInt32(CurrentSeason);
         writer.WriteInt32(PreviousSeason);
@@ -1320,6 +1206,8 @@ public class SeasonInfo : ServerPacket, ISpanWritable
         return writer.Position;
     }
 
+    /// <summary>V3_4_3 only - the first of the two Mythic+ ids, both zero on the native wire.</summary>
+    public int MythicPlusDisplaySeasonID;
     public int MythicPlusSeasonID;
     public int PreviousSeason;
     public int CurrentSeason;

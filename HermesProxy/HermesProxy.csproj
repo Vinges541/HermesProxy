@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <InternalsVisibleTo Include="HermesProxy.Tests" />
@@ -29,6 +29,11 @@
          fresh TrimmerRootDescriptor entries for the Options DTOs. -->
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
+    <!-- The generated packet dispatch table is an array of function pointers
+         (delegate*<...>[]), which is only expressible in an unsafe context. Framework already
+         sets this; the dispatch generator is what needs it here. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
     <!-- Write generator output to disk under obj/Generated/ for inspection during prototyping.
          Safe to leave on — the compiler doesn't read these files back, it uses the in-memory copy. -->
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
@@ -55,8 +60,7 @@
        Without these, PublishTrimmed=true binaries fail at runtime:
          HermesProxy — VersionChecker.cs Assembly.GetType("HermesProxy.World.Enums.V*.*")
            per-build enums; AccountDataManager.cs JsonSerializer on account data;
-           Server.cs JsonSerializer for update check; WorldSocket.cs packet
-           handler reflection; BnetServices.ServiceManager.cs Assembly.GetTypes()
+           Server.cs JsonSerializer for update check; BnetServices.ServiceManager.cs Assembly.GetTypes()
            + Activator.CreateInstance on request/response types; GameData.cs
            Type.GetFields/GetProperties for EstimateAvgBytesPerRow<T>.
          Framework — Framework.Serialization.Json and Framework.Util.RandomHelper

@@ -10,14 +10,13 @@ using System.Numerics;
 using Framework.Constants;
 using Framework;
 using Framework.IO;
+using HermesProxy.World.Dispatch;
 using Framework.Logging;
 using HermesProxy.World.Enums;
-using System.Reflection;
 using System.Threading.Tasks;
 using System.Threading;
 using Framework.Networking;
 using HermesProxy.World.Server;
-using System.Collections.Frozen;
 using System.Diagnostics;
 using HermesProxy.World.Logging;
 
@@ -57,8 +56,9 @@ public partial class WorldClient
     string _username = null!;
     Realm _realm = null!;
     LegacyWorldCrypt _worldCrypt = null!;
-    FrozenDictionary<Opcode, Action<WorldPacket>> _packetHandlers = null!;
     GlobalSessionData _globalSession = null!;
+    // Built alongside _globalSession in ConnectToWorldServer; the ctor runs before a session exists.
+    SessionContext _sessionContext;
     readonly Lock _sendLock = new();
     Timer? _keepAliveTimer;
     uint _keepAlivePingSerial;
@@ -75,11 +75,6 @@ public partial class WorldClient
     /// backend's verdict instead of only reporting that the connect failed.
     /// </summary>
     public AuthResult? LastAuthResult { get; private set; }
-
-    public WorldClient()
-    {
-        InitializePacketHandlers();
-    }
 
     public GlobalSessionData GetSession()
     {
@@ -124,6 +119,7 @@ public partial class WorldClient
         _worldCrypt = null!;
         _realm = realm;
         _globalSession = globalSession;
+        _sessionContext = new SessionContext(globalSession, globalSession.RealmSocket, this);
         _username = globalSession.Username;
         _isSuccessful = null;
         LastAuthResult = null;
@@ -185,6 +181,10 @@ public partial class WorldClient
         _closing = true;
         StopKeepAliveTimer();
         StopReadyCheckDeadline();
+
+        // Anything still waiting on an opcode that will now never arrive would otherwise reach
+        // the pool only via finalization, which is the case this class is least likely to notice.
+        DiscardDelayedPacketsToServer();
 
         // Unhook before closing so the receive loop does not treat this as an
         // unexpected drop and call OnDisconnect (that nulls AuthClient, which
@@ -382,6 +382,22 @@ public partial class WorldClient
     // server forcibly closed the connection after our CMSG_AUTH_SESSION when SendPacket
     // hopped onto a SendLoopAsync task. Until that interaction is understood, the legacy
     // outbound path stays synchronous-under-lock. The Wave 1 `using ByteBuffer` is kept.
+    /// <summary>
+    /// Writes one packet to the legacy server and disposes it.
+    /// </summary>
+    /// <remarks>
+    /// Disposal belongs here because this is the only place a legacy packet stops being needed.
+    /// Every WorldPacket rents a pooled buffer in its constructor, and before this returned it the
+    /// rental came back only through ~ByteBuffer - so each of the ~300 outbound construction sites
+    /// put its packet on the finalizer queue, which kept it alive through a GC, promoted it out of
+    /// Gen0, and released the array long after the burst that wanted it. The pool ended up growing
+    /// new arrays rather than recycling the ones already out.
+    /// <para>
+    /// Safe to dispose here because no caller touches a packet after handing it over: the delayed
+    /// queues own theirs until they are drained through this same method, and every direct caller
+    /// is terminal. That was checked across all 300 sites rather than assumed.
+    /// </para>
+    /// </remarks>
     private void SendPacket(WorldPacket packet)
     {
         lock (_sendLock)
@@ -418,6 +434,10 @@ public partial class WorldClient
                 Log.PrintNet(LogType.Error, LogNetDir.P2S, $"Packet Write Error: {ex.Message}");
                 if (_isSuccessful == null)
                     _isSuccessful = false;
+            }
+            finally
+            {
+                packet.Dispose();
             }
         }
     }
@@ -542,6 +562,17 @@ public partial class WorldClient
         SendDelayedPacketsToServerOnOpcode(opcode);
     }
 
+    /// <summary>Drops packets queued behind an opcode that is no longer coming.</summary>
+    private void DiscardDelayedPacketsToServer()
+    {
+        foreach (var queued in _delayedPacketsToServer.Values)
+        {
+            foreach (var packet in queued)
+                packet.Dispose();
+        }
+        _delayedPacketsToServer.Clear();
+    }
+
     private void SendDelayedPacketsToServerOnOpcode(Opcode opcode)
     {
         if (_delayedPacketsToServer.ContainsKey(opcode))
@@ -582,7 +613,7 @@ public partial class WorldClient
             || op == Opcode.SMSG_CACHE_VERSION;
     }
 
-    private void HandlePacket(WorldPacket packet)
+    private unsafe void HandlePacket(WorldPacket packet)
     {
         Opcode universalOpcode = packet.GetUniversalOpcode(false);
         if (NoisyOpcodes.IsNoisy(universalOpcode))
@@ -644,37 +675,12 @@ public partial class WorldClient
             case Opcode.SMSG_ADDON_INFO:
                 break; // don't need to handle
             default:
-                if (_packetHandlers.TryGetValue(universalOpcode, out var handler))
+                // Every SMSG handler is generated now, so a null slot means the opcode has no
+                // handler at all rather than one still sitting in a reflective registry.
+                var generated = GeneratedSmsgDispatch.Get(universalOpcode);
+                if (generated != null)
                 {
-                    // A throwing legacy handler used to escape into the read loop's catch,
-                    // which tears down the world connection (and previously the process).
-                    // The packet is already fully read off the socket, so dropping it here
-                    // cannot desync the stream, so keep the session alive instead.
-                    try
-                    {
-                        handler(packet);
-                    }
-                    catch (UnmappedOpcodeException unmapped)
-                    {
-                        Log.Print(LogType.Warn,
-                            $"C P<S | Handling {universalOpcode} ({packet.GetOpcode()}): {unmapped.Message}");
-                    }
-                    catch (Exception handlerException)
-                    {
-                        // Dump the whole packet, not a prefix. A parser that over-reads is
-                        // usually wrong about a field well past the first few bytes, and this
-                        // only fires on an exception so the volume is irrelevant.
-                        // GetSize is the real payload length; GetData can hand back a larger
-                        // ArrayPool rental, and reporting that length makes an over-read look
-                        // like it had spare bytes to read.
-                        byte[] raw = packet.GetData();
-                        int size = (int)packet.GetSize();
-                        int hexLen = System.Math.Min(1024, System.Math.Min(size, raw.Length));
-                        string body = hexLen > 0 ? System.BitConverter.ToString(raw, 0, hexLen) : "<empty>";
-                        Log.Print(LogType.Error,
-                            $"C P<S | Unhandled exception in handler for {universalOpcode} ({packet.GetOpcode()}) " +
-                            $"[size={size} dumped={hexLen}]{System.Environment.NewLine}bytes={body}{System.Environment.NewLine}{handlerException}");
-                    }
+                    HandleGeneratedLegacyPacket(generated, packet, universalOpcode);
                 }
                 else
                 {
@@ -692,6 +698,79 @@ public partial class WorldClient
         }
 
         SendDelayedPacketsToServerOnOpcode(universalOpcode);
+    }
+
+    /// <summary>
+    /// Runs a generated thunk with the same swallow-and-log the reflective arm has. The packet is
+    /// not disposed here: on this side the caller owns the buffer, and the reflective handlers it
+    /// sits beside do not dispose either.
+    /// </summary>
+    /// <summary>
+    /// Invokes a generated legacy thunk, which calls the handler still living on this instance.
+    /// </summary>
+    /// <remarks>
+    /// The legacy table carries a different thunk shape from the modern one: these handlers parse
+    /// inline off the WorldPacket rather than through a codec, so the thunk takes the client and
+    /// the packet. The error handling is the same as the reflective path it replaces - a throwing
+    /// handler must not escape into the read loop, which would tear down the world connection,
+    /// and the packet is already fully read off the socket so dropping it cannot desync the
+    /// stream.
+    /// </remarks>
+    private unsafe void HandleGeneratedLegacyPacket(
+        delegate*<WorldClient, WorldPacket, void> thunk,
+        WorldPacket packet,
+        Opcode universalOpcode)
+    {
+        try
+        {
+            thunk(this, packet);
+        }
+        catch (UnmappedOpcodeException unmapped)
+        {
+            Log.Print(LogType.Warn,
+                $"C P<S | Handling {universalOpcode} ({packet.GetOpcode()}): {unmapped.Message}");
+        }
+        catch (Exception handlerException)
+        {
+            byte[] raw = packet.GetData();
+            int size = (int)packet.GetSize();
+            int hexLen = System.Math.Min(1024, System.Math.Min(size, raw.Length));
+            string body = hexLen > 0 ? System.BitConverter.ToString(raw, 0, hexLen) : "<empty>";
+            Log.Print(LogType.Error,
+                $"C P<S | Unhandled exception in handler for {universalOpcode} ({packet.GetOpcode()}) " +
+                $"[size={size} dumped={hexLen}]{System.Environment.NewLine}bytes={body}{System.Environment.NewLine}{handlerException}");
+        }
+    }
+
+    private unsafe void HandleGeneratedPacket(
+        delegate*<ref SpanPacketReader, in SessionContext, void> thunk,
+        WorldPacket packet,
+        Opcode universalOpcode)
+    {
+        System.Diagnostics.Debug.Assert(_sessionContext.IsBound, "generated dispatch reached before the session was bound");
+
+        try
+        {
+            // See WorldSocket.HandleGeneratedPacket: the reader must continue from where the
+            // WorldPacket left off, not from index 0.
+            var reader = new SpanPacketReader(packet.GetRemainingSpan());
+            thunk(ref reader, in _sessionContext);
+        }
+        catch (UnmappedOpcodeException unmapped)
+        {
+            Log.Print(LogType.Warn,
+                $"C P<S | Handling {universalOpcode} ({packet.GetOpcode()}): {unmapped.Message}");
+        }
+        catch (Exception handlerException)
+        {
+            byte[] raw = packet.GetData();
+            int size = (int)packet.GetSize();
+            int hexLen = System.Math.Min(1024, System.Math.Min(size, raw.Length));
+            string body = hexLen > 0 ? System.BitConverter.ToString(raw, 0, hexLen) : "<empty>";
+            Log.Print(LogType.Error,
+                $"C P<S | Unhandled exception in handler for {universalOpcode} ({packet.GetOpcode()}) " +
+                $"[size={size} dumped={hexLen}]{System.Environment.NewLine}bytes={body}{System.Environment.NewLine}{handlerException}");
+        }
     }
 
     private void HandleAuthChallenge(WorldPacket packet)
@@ -851,45 +930,4 @@ public partial class WorldClient
         SendPing(serial | 0x80000000, 0);
     }
 
-    public void InitializePacketHandlers()
-    {
-        Dictionary<Opcode, Action<WorldPacket>> dict = [];
-
-        foreach (var methodInfo in typeof(WorldClient).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic))
-        {
-            foreach (var msgAttr in methodInfo.GetCustomAttributes<PacketHandlerAttribute>())
-            {
-                if (msgAttr == null)
-                    continue;
-
-                if (msgAttr.Opcode == Opcode.MSG_NULL_ACTION)
-                    continue;
-
-                if (dict.ContainsKey(msgAttr.Opcode))
-                {
-                    Log.Print(LogType.Error, $"Tried to override OpcodeHandler of {_packetHandlers[msgAttr.Opcode]} with {methodInfo.Name} (Opcode {msgAttr.Opcode})");
-                    continue;
-                }
-
-                var parameters = methodInfo.GetParameters();
-                if (parameters.Length == 0)
-                {
-                    Log.Print(LogType.Error, $"Method: {methodInfo.Name} Has no parameters");
-                    continue;
-                }
-
-                if (parameters[0].ParameterType != typeof(WorldPacket))
-                {
-                    Log.Print(LogType.Error, $"Method: {methodInfo.Name} has wrong BaseType");
-                    continue;
-                }
-
-                var del = (Action<WorldPacket>)Delegate.CreateDelegate(typeof(Action<WorldPacket>), this, methodInfo);
-
-                dict[msgAttr.Opcode] = del;
-            }
-        }
-
-        _packetHandlers = dict.ToFrozenDictionary();
-    }
 }

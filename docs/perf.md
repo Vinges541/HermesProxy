@@ -1,4 +1,4 @@
-# Performance Optimizations
+﻿# Performance Optimizations
 
 HermesProxy has been extensively optimized to minimize latency and memory allocations in packet handling hot paths.
 
@@ -63,6 +63,188 @@ Environment notes: the Mac mini hosting AzerothCore idle-sleeps after one minute
 the Docker VM with it (fixed for the session with `caffeinate`, durable fix
 `sudo pmset -c sleep 0 powernap 0`); never attach `dotnet-counters` and `dotnet-trace` at
 the same time, the counters' own formatting dominates the trace.
+
+---
+
+## Generated dispatch, measured 2026-09-12
+
+First converted slice: `CMSG_ATTACK_SWING`, `CMSG_ATTACK_STOP`, `CMSG_SET_SHEATHED`,
+`CMSG_BUY_BACK_ITEM` moved from the reflective registry to the generated function-pointer table,
+with `readonly record struct` packets and codecs over `SpanPacketReader`.
+
+`PacketDispatchBenchmarks`, Windows dev box (i7-6700K), `--job short`. `*_Activator` is the
+pre-migration path, kept alive against frozen copies of the old `ClientPacket` classes so the
+comparison survives the conversion; `*_Codec` is what production runs now.
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| `BuyBackItem_Activator` | 270.8 ns | 368 B |
+| `BuyBackItem_Direct` | 85.8 ns | 112 B |
+| **`BuyBackItem_Codec`** | **6.0 ns** | **0 B** |
+| `AttackSwing_Activator` | 280.0 ns | 360 B |
+| `AttackSwing_Direct` | 84.5 ns | 104 B |
+| **`AttackSwing_Codec`** | **5.1 ns** | **0 B** |
+
+That lands on the 0 B / 6 ns x64 floor the baseline predicted — ~45x on latency and the whole
+per-packet allocation gone. Reflective dispatch was only 1.3% of CPU, so the value here is
+allocation and the per-session startup scan, not throughput; see the baseline table above for
+where the bytes actually are.
+
+Numbers quoted in a PR should come from the Mac mini M4, not this host.
+
+### Mac mini M4, 2026-09-13 — all 384 opcodes converted
+
+Same benchmark on the quiet box, after the whole modern reflection table emptied. `*_Generated`
+is new: it adds the generated table's real lookup and an indirect call on top of the same codec
+work `*_Codec` measures. Neither arm runs the system handler, which needs a live session and
+sockets - so the pair is comparable to each other, not to production end to end.
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| `BuyBackItem_Activator` | 125.36 ns | 368 B |
+| `BuyBackItem_Direct` | 36.82 ns | 112 B |
+| **`BuyBackItem_Codec`** | **1.94 ns** | **0 B** |
+| **`BuyBackItem_Generated`** | **3.51 ns** | **0 B** |
+| `SetActionButton_Activator` | 117.63 ns | 352 B |
+| `SetActionButton_Codec` | below measurement | 0 B |
+| `AttackSwing_Activator` | 122.31 ns | 360 B |
+| `AttackSwing_Codec` | 1.79 ns | 0 B |
+| `Whisper_Activator` | 164.08 ns | 552 B |
+| `Whisper_Direct` | 72.72 ns | 296 B |
+| **`Whisper_Codec`** | **23.43 ns** | **104 B** |
+
+~36x on latency and the whole per-packet allocation gone, on value-type packets.
+
+Three things the table says that the headline does not:
+
+- **The dispatch indirection costs ~1.6 ns** (3.51 vs 1.94). The plan predicted `*_Generated`
+  would land within noise of the codec and said that if it did not, the thunk was not inlining
+  and that was a finding. It is a finding, and it is also irrelevant next to the 125 ns it
+  replaces - but it is not free, and the table is ~118 KB so a cold lookup is not an L1 hit.
+- **`Whisper_Codec` was recorded here as 125 ns / 168 B, slower than `Whisper_Direct`. That was a
+  benchmark bug, corrected 2026-09-13.** The arm built a `WorldPacket` for `GetRemainingSpan()`
+  and never disposed it. `ByteBuffer` has a finalizer and `Dispose` is what calls
+  `GC.SuppressFinalize`, so the undisposed instance was queued for finalization, survived Gen0 and
+  was promoted - that arm was the only one reporting Gen1 (0.0103) and Gen2 (0.0012) collections.
+  It was measuring finalization, which production never pays because `HandleGeneratedPacket`
+  disposes in a `finally`. Re-measured with `--job medium` after reading the payload span directly
+  as the other `*_Codec` arms do: **23.43 ns +/-0.041, 104 B** - 7x faster than the reflection path
+  and 3.1x faster than direct, landing exactly on the 104 B two-string floor the baseline
+  predicted. There is no string-packet regression.
+
+  Two lessons worth keeping. The `ShortRun` error bar was +/-74 ns on a 125 ns mean, which read as
+  "noisy" and hid a real defect; `--job medium` brought it to +/-0.041 ns and made it obvious. And
+  an arm that allocates *less* but runs *slower* is a contradiction worth chasing rather than
+  writing off - here it was the exact Gen1/Gen2 promotion pathology this refactor exists to remove,
+  reproduced accidentally inside the benchmark.
+- **`SetActionButton_Codec` measured as exactly zero** and BenchmarkDotNet flagged it as
+  indistinguishable from an empty method. That is the JIT eliding the work, not a real number.
+  Read it as "too fast to measure".
+
+### Mac mini M4, 2026-09-13 — extended coverage, `--job medium`
+
+`ShortRun` is what let the `Whisper` bug above survive, so this run uses `--job medium` (15
+iterations) and adds the arms that were missing: an array-bearing packet, a second `_Generated`,
+and the legacy dispatch mechanism.
+
+| arm | mean | error | allocated |
+|---|---:|---:|---:|
+| `BuyBackItem_Activator` | 121.90 ns | ±0.89 | 368 B |
+| `BuyBackItem_Direct` | 37.92 ns | ±0.25 | 112 B |
+| **`BuyBackItem_Codec`** | **1.95 ns** | ±0.001 | **0 B** |
+| `BuyBackItem_Generated` | 4.26 ns | ±0.57 | 0 B |
+| `SetActionButton_Activator` | 116.88 ns | ±0.54 | 352 B |
+| `SetActionButton_Direct` | 30.90 ns | ±0.24 | 96 B |
+| **`SetActionButton_Codec`** | below measurement | — | **0 B** |
+| `AttackSwing_Activator` | 120.46 ns | ±0.65 | 360 B |
+| `AttackSwing_Direct` | 37.47 ns | ±0.19 | 104 B |
+| **`AttackSwing_Codec`** | **1.78 ns** | ±0.03 | **0 B** |
+| `Whisper_Activator` | 163.36 ns | ±0.48 | 552 B |
+| `Whisper_Direct` | 72.78 ns | ±0.35 | 296 B |
+| **`Whisper_Codec`** | **23.64 ns** | ±0.05 | **104 B** |
+| `Whisper_Generated` | 34.64 ns | ±0.38 | 104 B |
+| `DBQueryBulk_Activator` | 239.21 ns | ±0.65 | 1008 B |
+| `DBQueryBulk_Direct` | 156.88 ns | ±0.36 | 752 B |
+| **`DBQueryBulk_Codec`** | **40.93 ns** | ±0.05 | **216 B** |
+| `LegacySmsg_Dictionary` | 0.810 ns | ±0.017 | 0 B |
+| `LegacySmsg_Table` | 0.767 ns | ±0.057 | 0 B |
+
+**The legacy conversion has no measurable per-packet win.** 0.810 ns against 0.767 ns, a 0.044 ns
+gap on error bars of ±0.017 and ±0.057 - noise. The `FrozenDictionary` hash plus closed-delegate
+invoke that Phase A replaced was already effectively free, so the 443-handler conversion bought
+the per-`WorldClient` reflection scan at startup and a uniform dispatch shape, **not throughput**.
+Do not claim otherwise. This arm exists to be able to say that, and it said it.
+
+**The dispatch indirection does not cost a fixed amount.** `BuyBackItem` pays 2.31 ns for the
+lookup plus indirect call (4.26 vs 1.95); `Whisper` pays 11.0 ns (34.64 vs 23.64). Same mechanism,
+~5x apart, well outside the error bars. The earlier "~1.6 ns" was a single sample of something
+that varies - most likely table locality, the table being ~118 KB. Unresolved; quote a range or
+nothing.
+
+**The array case converts well.** `DBQueryBulk` is 5.8x on latency and 1008 B -> 216 B, where 216 B
+is the `List<uint>` floor for 40 ids. Pre-sizing against what the wire can hold beats growing from
+empty, which is what the old reader did.
+
+**What is still not measured:** no arm runs a system handler, so nothing here is end-to-end - the
+codec is the cheap half. Coverage is 5 of 384 CMSG opcodes and one synthetic legacy pair.
+
+### Live run, Arathi Basin with bots, 2026-09-13 (`hermes-20260913_053412.log`)
+
+Same shape as the 2026-09-02 baseline run 5 - login, queue, one full Arathi Basin against
+playerbots - read at the same 15-minute cumulative mark so the two are comparable.
+
+Client to server, the path this work converted:
+
+| | baseline 2026-09-02 | 2026-09-13 |
+|---|---:|---:|
+| total allocated | 92.55 MB | **9.13 MB** |
+| packets | 5,052 | 6,379 |
+| per packet | 18.3 KB | **1.5 KB** |
+
+| opcode | baseline avg / max | now avg / max |
+|---|---:|---:|
+| `CMSG_MOVE_SET_FACING_HEARTBEAT` | 27,863 B / 394,304 | 866 B / 1,424 |
+| `CMSG_MOVE_STOP_STRAFE` | 18,158 B / 394,120 | 869 B / 1,144 |
+| `CMSG_MOVE_SET_PITCH` | 32,293 B / 394,120 | 875 B / 1,288 |
+| `CMSG_TIME_SYNC_RESPONSE` | 813 B | 330 B |
+
+Server to client, which this work did **not** touch, at a matched packet rate: the baseline's
+busiest window was 620 pkt/s at 1.5 MB/s and 23 gen0/min; this run held 0.28-0.50 MB/s and
+4-8 gen0/min while peaking at 757 pkt/s. That belongs to the update-path work (PR #272, #246,
+#286), not to dispatch.
+
+**What the 12x does and does not show.** The dispatch conversion removes the ClientPacket and
+WorldPacket objects - about 360 B per packet, which is what the micro-benchmark measures. It
+cannot account for 27,863 -> 866. What actually disappeared is the recurring ~384 KB
+`ArrayPool` bucket spike that the baseline flagged as open question 4, which was landing on
+whichever packet was in flight and was most of that 92.55 MB. The leading candidate is the
+legacy-send disposal fix landed the same day - returning pooled buffers at the send site
+instead of via `~ByteBuffer` is exactly what stops bucket misses - but this is one run against
+a baseline a year of other work separates it from, and the two were not isolated. Treat the
+360 B/packet as attributable and the rest as unattributed until someone runs the A/B.
+
+Not everything improved. The heap sits at 118 MB against the baseline's 92 MB, with no
+explanation offered here. `CMSG_PLAYER_LOGIN` is still 2.36 MB in one shot, which remains a
+larger lever than anything left in dispatch.
+
+`CMSG_CHAT_MESSAGE_SAY` was listed here as a recurring 286,984 B spike carrying 22% of all
+client-to-server allocation. **That reading was wrong, corrected 2026-09-13.** The spike is a
+one-shot warm-up on the first chat message of a session, and the per-packet cost afterwards is
+small: across consecutive cumulative windows in `hermes-20260913_143628.log` the packet count
+went 67 -> 71 while `TotalKB` went 1203.2 -> 1213.6, i.e. **2.6 KB for each additional message**,
+with `MaxB` pinned at exactly 287,088 the whole time. A large `AvgB` on a low-count opcode is
+that single allocation smeared across the count, and the `Share` column inherits the error - so
+read `MaxB` against the marginal cost between windows before believing a share figure on any
+opcode with few packets.
+
+Part of the 2.6 KB steady state was five `[ChatTrace]` sites building a `Substring`, a concat and
+a full interpolation before `Log.Print` could discard them - three per outgoing message, one per
+incoming one on the path that carries every message from every player in every joined channel.
+Converted to `[LoggerMessage]` in `World/Logging/ChatLogMessages.cs` with explicit `IsEnabled`
+guards, since the attribute stops the formatting but not the argument evaluation. What allocates
+the 287 KB on first use is still unidentified; `ItemLinkTranslator` and the message splitter were
+both checked and are not it.
+
 
 ---
 

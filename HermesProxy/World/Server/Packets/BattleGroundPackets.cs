@@ -20,6 +20,7 @@ using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
 using HermesProxy.Enums;
+using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -85,44 +86,22 @@ class BattlefieldList : ServerPacket, ISpanWritable
     public bool HasRandomWinToday;
 }
 
-class BattlemasterJoin : ClientPacket
-{
-    public BattlemasterJoin(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        long queueId = _worldPacket.ReadInt64();
-        BattlefieldListId = (uint)(queueId & ~0x1F10000000000000);
-        Roles = _worldPacket.ReadUInt8();
-        BlacklistMap[0] = _worldPacket.ReadInt32();
-        BlacklistMap[1] = _worldPacket.ReadInt32();
-        BattlemasterGuid = _worldPacket.ReadPackedGuid128();
-        Verification = _worldPacket.ReadInt32();
-        BattlefieldInstanceID = _worldPacket.ReadInt32();
-        JoinAsGroup = _worldPacket.HasBit();
-
-    }
-
-    public uint BattlefieldListId;
-    public byte Roles;
-    public int[] BlacklistMap = new int[2];
-    public WowGuid128 BattlemasterGuid;
-    public int Verification;
-    public int BattlefieldInstanceID;
-    public bool JoinAsGroup;
+/// <remarks>
+/// The queue id arrives as an int64 with a 0x1F10... tag in its high bits; the low half is the
+/// battlefield list id the legacy server wants.
+/// </remarks>
+public readonly record struct BattlemasterJoin(
+    uint BattlefieldListId, byte Roles, BlacklistMaps BlacklistMap, WowGuid128 BattlemasterGuid,
+    int Verification, int BattlefieldInstanceID, bool JoinAsGroup);
+
+/// <remarks>Fixed at two on the wire, so it is an inline array rather than a heap one.</remarks>
+[System.Runtime.CompilerServices.InlineArray(2)]
+public struct BlacklistMaps
+{
+    private int _element0;
 }
 
-class BattlefieldListRequest : ClientPacket
-{
-    public BattlefieldListRequest(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        ListID = _worldPacket.ReadInt32();
-    }
-
-    public int ListID;
-}
+public readonly record struct BattlefieldListRequest(int ListID);
 
 public class BattlefieldStatusNeedConfirmation : ServerPacket, ISpanWritable
 {
@@ -360,6 +339,26 @@ public class RideTicket
         }
     }
 
+    /// <summary>Span-reader twin of <see cref="Read(WorldPacket)"/>, kept in lockstep with it.</summary>
+    /// <remarks>
+    /// The V3_4_3 branch is exact equality rather than a range because this is a helper shared by
+    /// inbound and outbound packets, so it cannot become a ranged codec pair — a PacketCodec
+    /// attribute binds to a packet type. It carries the same caveat the ranged pairs exist to fix:
+    /// a future build falls into the else and skips the Unknown925 bit.
+    /// </remarks>
+    public void Read(ref Framework.IO.SpanPacketReader data)
+    {
+        RequesterGuid = data.ReadPackedGuid128();
+        Id = data.ReadUInt32();
+        Type = (RideType)data.ReadUInt32();
+        Time = data.ReadInt64();
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            data.HasBit();         // Unknown925
+            data.ResetBitReader(); // byte-align to the next field's bit byte
+        }
+    }
+
     public void Write(WorldPacket data)
     {
         data.WritePackedGuid128(RequesterGuid);
@@ -381,19 +380,7 @@ public enum RideType
     Lfg = 2
 }
 
-class BattlefieldPort : ClientPacket
-{
-    public BattlefieldPort(WorldPacket packet) : base(packet) { }
-
-    public override void Read()
-    {
-        Ticket.Read(_worldPacket);
-        AcceptedInvite = _worldPacket.HasBit();
-    }
-
-    public RideTicket Ticket = new();
-    public bool AcceptedInvite;
-}
+public readonly record struct BattlefieldPort(RideTicket Ticket, bool AcceptedInvite);
 
 public class BattlefieldStatusActive : ServerPacket, ISpanWritable
 {
@@ -487,19 +474,9 @@ public class BattlegroundInit : ServerPacket, ISpanWritable
     public ushort BattlegroundPoints;
 }
 
-class RequestBattlefieldStatus : ClientPacket
-{
-    public RequestBattlefieldStatus(WorldPacket packet) : base(packet) { }
+public readonly record struct RequestBattlefieldStatus;
 
-    public override void Read() { }
-}
-
-class PVPLogDataRequest : ClientPacket
-{
-    public PVPLogDataRequest(WorldPacket packet) : base(packet) { }
-
-    public override void Read() { }
-}
+public readonly record struct PVPLogDataRequest;
 
 public class PVPMatchStatisticsMessage : ServerPacket
 {
@@ -665,12 +642,7 @@ public class PVPMatchStatisticsMessage : ServerPacket
     }
 }
 
-class BattlefieldLeave : ClientPacket
-{
-    public BattlefieldLeave(WorldPacket packet) : base(packet) { }
-
-    public override void Read() { }
-}
+public readonly record struct BattlefieldLeave;
 
 class BattlegroundPlayerPositions : ServerPacket, ISpanWritable
 {
