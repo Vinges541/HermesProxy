@@ -701,20 +701,15 @@ public partial class WorldClient
     }
 
     /// <summary>
-    /// Runs a generated thunk with the same swallow-and-log the reflective arm has. The packet is
-    /// not disposed here: on this side the caller owns the buffer, and the reflective handlers it
-    /// sits beside do not dispose either.
-    /// </summary>
-    /// <summary>
     /// Invokes a generated legacy thunk, which calls the handler still living on this instance.
     /// </summary>
     /// <remarks>
     /// The legacy table carries a different thunk shape from the modern one: these handlers parse
     /// inline off the WorldPacket rather than through a codec, so the thunk takes the client and
-    /// the packet. The error handling is the same as the reflective path it replaces - a throwing
+    /// the packet. The error handling is the same as the reflective path it replaced - a throwing
     /// handler must not escape into the read loop, which would tear down the world connection,
     /// and the packet is already fully read off the socket so dropping it cannot desync the
-    /// stream.
+    /// stream. The packet is not disposed here: on this side the caller owns the buffer.
     /// </remarks>
     private unsafe void HandleGeneratedLegacyPacket(
         delegate*<WorldClient, WorldPacket, void> thunk,
