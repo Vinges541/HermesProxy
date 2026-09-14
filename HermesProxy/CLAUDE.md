@@ -39,8 +39,11 @@ dotnet run --project HermesProxy -- --metrics
 ## Packet Handling (World/)
 
 - `World/Server/Packets/` — modern packet structure definitions (sent to/from retail client)
-- `World/Server/PacketHandlers/` — handler logic that translates between protocol versions
-- `World/Client/` — legacy packet structures and handlers (communication with emulator)
+- `World/Server/Packets/Codecs/` — inbound CMSG readers, one per packet (see its `CLAUDE.md`)
+- `World/Server/Systems/` — CMSG translation, one static `*System` per domain (see its `CLAUDE.md`)
+- `World/Dispatch/` — dispatch attributes and `SessionContext`; tables are source-generated (see its `CLAUDE.md`)
+- `World/Server/PacketHandlers/` — leftovers only: `WorldSocket` partials (guild rank-permission debounce) and a signpost; new CMSG handlers go in `Systems/`
+- `World/Client/` — legacy packet structures and `[HandlesSmsg]` handlers (communication with emulator)
 
 ## Embedded Resources & Static Data
 
