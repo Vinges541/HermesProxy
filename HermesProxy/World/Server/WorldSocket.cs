@@ -422,8 +422,12 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
                 break;
             case Opcode.CMSG_ENABLE_NAGLE:
+                // Only the socket the client asked on, as native does (TC WorldSocket.cpp). The
+                // proxy's own link to the legacy server stays no-delay: legacy clients never asked
+                // for Nagle, and there is no opcode to turn it back off, so copying the request there
+                // delayed every small CMSG for the rest of the connection. With 300 ms of added lag
+                // the in-game latency read ~1100 ms against ~600 ms of real round trip.
                 SetNoDelay(false);
-                GetSession()?.WorldClient?.SetNoDelay(false);
                 break;
             case Opcode.CMSG_CONNECT_TO_FAILED:
                 ConnectToFailed connectToFailed = new(packet);

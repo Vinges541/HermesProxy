@@ -199,11 +199,6 @@ public partial class WorldClient
         return _clientSocket != null && _clientSocket.Connected;
     }
 
-    public void SetNoDelay(bool enable)
-    {
-        _clientSocket?.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, enable);
-    }
-
     public uint GetQueuePosition()
     {
         return _queuePosition;
