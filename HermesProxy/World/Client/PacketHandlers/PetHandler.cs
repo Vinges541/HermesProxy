@@ -31,6 +31,7 @@ public partial class WorldClient
     internal void HandlePetSpellsMessage(WorldPacket packet)
     {
         WowGuid64 guid = packet.ReadGuid();
+        WowGuid128 barOwnerBefore = GetSession().GameState.CurrentPetGuid;
         GetSession().GameState.CurrentPetGuid = guid.To128(GetSession().GameState);
         GetSession().GameState.ClearPendingPetCasts();
 
@@ -38,6 +39,25 @@ public partial class WorldClient
         if (guid.IsEmpty())
         {
             GetSession().ToClient.Cancel(HeldPetSpells.Key);
+
+            // Native V3_4_3 answers both a dismissed pet and an ended charm or vehicle with an
+            // empty SMSG_PET_SPELLS_MESSAGE (Player::RemovePet, Player::SendRemoveControlBar) and
+            // never sends SMSG_PET_CLEAR_SPELLS (STATUS_UNHANDLED).
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                SendPacketToClient(new PetSpells { Specialization = 0 });
+
+                // A charm or vehicle bar just went away. The server re-sends the pet bar only when
+                // the pet has to be put back into the owner's summon slot, and a charm never took
+                // it, so a hunter pet still out after the Crashin' Thrashin' Racer ended kept
+                // following with no frame or bar. The 3.3.5a client restores the bar itself; the
+                // 3.4.3 client doesn't. Ask for it the way /reload does; the server answers only
+                // if a pet is still out.
+                if (!barOwnerBefore.IsEmpty() && barOwnerBefore.GetHighType() != HighGuidType.Pet)
+                    SendPacketToServer(new WorldPacket(Opcode.CMSG_REQUEST_PET_INFO));
+                return;
+            }
+
             PetClearSpells clear = new();
             SendPacketToClient(clear);
             return;
@@ -219,16 +239,23 @@ public partial class WorldClient
     [HandlesSmsg(Opcode.MSG_LIST_STABLED_PETS)]
     internal void HandleListStabledPets(WorldPacket packet)
     {
-        PetGuids pets = new PetGuids();
-        var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
-        int UNIT_FIELD_SUMMON = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_SUMMON);
-        if (UNIT_FIELD_SUMMON >= 0 && updateFields != null && updateFields.ContainsKey(UNIT_FIELD_SUMMON))
+        // Native V3_4_3 never sends SMSG_PET_GUIDS (3.4.3 Opcodes.cpp: STATUS_UNHANDLED). Built
+        // here from the cached UNIT_FIELD_SUMMON, it read 0 when a pet came out of the stable:
+        // the list answer lands before the server's Summon update, and the client took the
+        // empty list as "no pet", dropping the pet frame and bar until the pet was re-called.
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
         {
-            WowGuid128 guid = GetGuidValue(updateFields, UnitField.UNIT_FIELD_SUMMON).To128(GetSession().GameState);
-            if (!guid.IsEmpty())
-                pets.Guids.Add(guid);
+            PetGuids pets = new PetGuids();
+            var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
+            int UNIT_FIELD_SUMMON = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_SUMMON);
+            if (UNIT_FIELD_SUMMON >= 0 && updateFields != null && updateFields.ContainsKey(UNIT_FIELD_SUMMON))
+            {
+                WowGuid128 guid = GetGuidValue(updateFields, UnitField.UNIT_FIELD_SUMMON).To128(GetSession().GameState);
+                if (!guid.IsEmpty())
+                    pets.Guids.Add(guid);
+            }
+            SendPacketToClient(pets);
         }
-        SendPacketToClient(pets);
 
         // Parsed into plain locals rather than straight into PetStableList: on V3_4_3 that
         // packet's opcode resolves to 0 and its ServerPacket constructor throws, which used

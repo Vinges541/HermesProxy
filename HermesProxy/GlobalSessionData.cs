@@ -1670,18 +1670,27 @@ public sealed class GameSessionData
     // Re-resolve a possibly-stale modern Pet GUID (entry=pet_number, because the .To128
     // translation ran before RegisterPet had populated the map) to the corrected modern
     // Pet GUID (entry=creature_template.entry). PetModernGuidByNumber maps pet_number →
-    // corrected GUID. Returns null if not a Pet GUID or the pet isn't registered (TC
-    // native repacks where realEntry is encoded directly — lookup by realEntry returns
-    // nothing, leaving the field unchanged).
+    // the last registered GUID for that pet. Returns null if not a Pet GUID, the pet isn't
+    // registered, or the GUID is already correct.
+    //
+    // Only the entry comes from the registration. A pet keeps its number across spawns but
+    // gets a new counter each time it is summoned or taken out of the stable, so the
+    // registered GUID can belong to the previous spawn. Taking it whole pointed the player's
+    // Summon at the spawn that had just gone into the stable: the new pet's model appeared
+    // but its unit frame never bound.
     public WowGuid128? ResolveStalePetGuid(WowGuid128 stale)
     {
         if (stale.GetHighType() != HighGuidType.Pet) return null;
+        uint realEntry;
         lock (ObjectCacheLock)
         {
-            return PetModernGuidByNumber.TryGetValue(stale.GetEntry(), out var corrected)
-                ? corrected
-                : null;
+            if (!PetModernGuidByNumber.TryGetValue(stale.GetEntry(), out var registered))
+                return null;
+            realEntry = registered.GetEntry();
         }
+
+        var corrected = WowGuid128.Create(HighGuidType703.Pet, 0, realEntry, stale.GetCounter());
+        return corrected == stale ? null : corrected;
     }
 
     public void StoreOriginalObjectType(WowGuid128 guid, ObjectType type)
