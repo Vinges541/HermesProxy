@@ -132,15 +132,6 @@ public sealed class GameSessionData
     public bool IsWaitingForNewWorld;
     public bool IsWaitingForWorldPortAck;
     public bool IsFirstEnterWorld;
-    public bool IsConnectedToInstance;
-    public Queue<ServerPacket> PendingUninstancedPackets = new(); // Here packets are queued while IsConnectedToInstance = false;
-    public readonly Lock PendingUninstancedPacketsLock = new();
-    // Realm-destined packets queued while RealmSocket is null (modern client's BNet→Realm
-    // handoff hasn't completed yet but the legacy server is already sending early-session
-    // packets like SMSG_TUTORIAL_FLAGS). Flushed in WorldSocket.HandleEnterEncryptedModeAck
-    // when RealmSocket is assigned.
-    public Queue<ServerPacket> PendingRealmPackets = new();
-    public readonly Lock PendingRealmPacketsLock = new();
     public bool IsInWorld;
     // Purchased stable slots, learned from legacy MSG_LIST_STABLED_PETS. V3_4_3 keeps this
     // in ActivePlayerData, and the client greys out every slot it thinks is unpurchased,
@@ -2003,7 +1994,29 @@ public class GlobalSessionData
     {
         ToClient.Discard(OutboxScope.GameState);
         ToServer.Discard(OutboxScope.GameState);
+        // Parked packets were built from the old state too, and the new one starts outside the world.
+        ToClient.DiscardParked();
+        ToClient.SetGate(OutboxGate.InWorld, open: false);
+        ToServer.SetGate(OutboxGate.InWorld, open: false);
         GameState = GameSessionData.CreateNewGameSessionData(this);
+    }
+
+    /// <summary>
+    /// Runs after each legacy packet's handler: releases holds waiting for this opcode, closes the
+    /// update batch if it was one, and acts on deadlines that must run on this thread.
+    /// </summary>
+    public void OnLegacyPacketHandled(Opcode opcode)
+    {
+        ToServer.Notify(OutboxEvent.OpcodeHandled(opcode));
+        ToClient.Notify(OutboxEvent.OpcodeHandled(opcode));
+        if (opcode is Opcode.SMSG_UPDATE_OBJECT or Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)
+        {
+            ToClient.Notify(OutboxEvent.Signal(OutboxSignal.UpdateBatchEnd));
+            ToServer.Notify(OutboxEvent.Signal(OutboxSignal.UpdateBatchEnd));
+        }
+        ToClient.Tick();
+        ToServer.Tick();
+        ToClient.TickParks();
     }
     
     public void StoreGuildRankNames(uint guildId, List<string> ranks)
@@ -2092,6 +2105,8 @@ public class GlobalSessionData
             InstanceSocket = null!;
         }
 
+        ToClient.Detach(Framework.Constants.ConnectionType.Realm);
+        ToClient.Detach(Framework.Constants.ConnectionType.Instance);
         ToClient.Discard(OutboxScope.Session);
         ToServer.Discard(OutboxScope.Session);
         ReplaceGameState();

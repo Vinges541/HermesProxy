@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using Framework.Logging;
 using HermesProxy.World.Logging;
@@ -83,6 +84,10 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     private readonly Dictionary<OutboxEvent, List<Hold>> _byEvent = [];
     private readonly Dictionary<HoldKey, List<Hold>> _byKey = [];
     private readonly Dictionary<HoldKey, long> _pacedNext = [];
+    // A lane is busy from the moment its current holder starts until it calls LaneDone. The
+    // scope is the one the holder was started with, so tearing that scope down frees the lane.
+    private readonly Dictionary<HoldKey, OutboxScope> _busyLanes = [];
+    private readonly Dictionary<HoldKey, Queue<Hold>> _laneWaiting = [];
     private readonly bool[] _gates = new bool[Enum.GetValues<OutboxGate>().Length];
 
     private int _pending;
@@ -249,6 +254,90 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
             Refuse(null);
     }
 
+    /// <summary>
+    /// Runs <paramref name="start"/> once nothing else holds <paramref name="lane"/>: now if the lane
+    /// is free, otherwise after the current holder calls <see cref="LaneDone"/>, in the order the
+    /// calls were made. For work that spans several packets and must not interleave with another
+    /// run of itself. The holder must call <see cref="LaneDone"/> on every path, including failure.
+    /// </summary>
+    public void Exclusive(HoldKey lane, Action start, in HoldOptions options = default)
+    {
+        bool startNow = false;
+        bool refused = false;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                refused = true;
+            }
+            else if (!_busyLanes.ContainsKey(lane))
+            {
+                _busyLanes[lane] = options.Scope;
+                startNow = true;
+            }
+            else if (!TryReserveSlot())
+            {
+                refused = true;
+            }
+            else
+            {
+                var hold = new Hold { Continuation = start, Kind = OutboxHoldKind.Lane, Key = lane };
+                ApplyWaitOptions(hold, options);
+                // The lane, not the key index, orders these, so keep them out of Cancel/Release.
+                hold.Key = null;
+                // A waiter that times out is dropped, never started: starting it would run two
+                // holders of the lane at once.
+                hold.OnTimeout = OutboxTimeoutAction.Discard;
+                hold.RunsOnTimer = true;
+                if (!_laneWaiting.TryGetValue(lane, out var waiting))
+                    _laneWaiting[lane] = waiting = new Queue<Hold>();
+                waiting.Enqueue(hold);
+                Link(hold);
+                ArmTimer();
+                LogHeld(hold);
+            }
+        }
+
+        if (refused)
+            Refuse(null);
+        else if (startNow)
+            RunReleases([new Hold { Continuation = start }]);
+    }
+
+    /// <summary>Frees <paramref name="lane"/> and starts the next waiting holder, if any.</summary>
+    public void LaneDone(HoldKey lane)
+    {
+        List<Hold>? next = null;
+        lock (_lock)
+        {
+            if (!_busyLanes.Remove(lane))
+                return;
+
+            if (_laneWaiting.TryGetValue(lane, out var waiting))
+            {
+                while (waiting.TryDequeue(out var hold))
+                {
+                    if (hold.Done)
+                        continue;
+                    Complete(hold, ref next);
+                    _busyLanes[lane] = hold.Scope;
+                    break;
+                }
+                if (waiting.Count == 0)
+                    _laneWaiting.Remove(lane);
+            }
+
+            if (next != null)
+            {
+                PurgeCompleted();
+                ArmTimer();
+            }
+        }
+
+        if (next != null)
+            RunReleases(next);
+    }
+
     // ---- triggers ---------------------------------------------------------------------------
 
     /// <summary>
@@ -372,6 +461,17 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
             {
                 Array.Clear(_gates);
                 _pacedNext.Clear();
+                _busyLanes.Clear();
+                _laneWaiting.Clear();
+            }
+            else
+            {
+                // A holder whose scope is gone will never call LaneDone.
+                foreach (var (lane, laneScope) in _busyLanes.ToArray())
+                {
+                    if (laneScope == scope)
+                        _busyLanes.Remove(lane);
+                }
             }
             ArmTimer();
         }
@@ -617,7 +717,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         _pending--;
         (into ??= []).Add(hold);
 
-        if (hold.Kind != OutboxHoldKind.Timer)
+        if (hold.Kind is OutboxHoldKind.Event or OutboxHoldKind.Gate)
         {
             if (hold.Events != null)
             {
@@ -772,7 +872,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         {
             foreach (var hold in released)
             {
-                if (hold.Kind != OutboxHoldKind.Timer)
+                if (hold.Kind != OutboxHoldKind.Timer && hold.Kind != OutboxHoldKind.Lane)
                     LogTimedOut(hold);
             }
             RunReleases(released);

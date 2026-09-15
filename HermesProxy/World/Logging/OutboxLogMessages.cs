@@ -92,4 +92,32 @@ internal static partial class OutboxLogMessages
         Message = "[Outbox] {Direction} dropped {Opcode} ({Connection}): no connection to write it to")]
     public static partial void WireUnavailable(
         ILogger logger, string direction, Enums.Opcode opcode, string connection);
+
+    [LoggerMessage(
+        EventId = 1511,
+        Level = LogLevel.Debug,
+        Message = "[Outbox] client parked {Opcode} for the {Connection} socket; {Parked} parked")]
+    public static partial void Parked(
+        ILogger logger, Enums.Opcode opcode, Framework.Constants.ConnectionType connection, int parked);
+
+    [LoggerMessage(
+        EventId = 1512,
+        Level = LogLevel.Warning,
+        Message = "[Outbox] client dropped {Count} parked packets after {Seconds:F0} s waiting for a socket, oldest {Opcode}")]
+    public static partial void ParkExpired(
+        ILogger logger, int count, double seconds, Enums.Opcode opcode);
+
+    [LoggerMessage(
+        EventId = 1513,
+        Level = LogLevel.Debug,
+        Message = "[Outbox] client discarded {Count} parked packets")]
+    public static partial void ParkDiscarded(
+        ILogger logger, int count);
+
+    [LoggerMessage(
+        EventId = 1514,
+        Level = LogLevel.Error,
+        Message = "[Outbox] client dropped {Opcode}: {Max} packets already parked")]
+    public static partial void ParkOverflow(
+        ILogger logger, int max, Enums.Opcode opcode);
 }

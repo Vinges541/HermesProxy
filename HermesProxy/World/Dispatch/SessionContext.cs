@@ -80,29 +80,20 @@ public readonly struct SessionContext
     }
 
     /// <summary>
-    /// Proxy to legacy emulator. Mirrors <c>WorldSocket.SendPacketToServer</c>, including its
-    /// behaviour when the legacy connection is gone — dropping with an error beats throwing
-    /// inside a handler.
-    /// </summary>
-    public void SendPacketToServer(WorldPacket packet, Opcode delayUntilOpcode = Opcode.MSG_NULL_ACTION)
-    {
-        WorldClient? client = Session.WorldClient;
-        if (client != null)
-            client.SendPacketToServer(packet, delayUntilOpcode);
-        else
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Error,
-                $"Attempt to send opcode {packet.GetUniversalOpcode(false)} ({packet.GetOpcode()}) while WorldClient is disconnected!");
-    }
-
-    /// <summary>
-    /// Proxy to modern client, routed by connection type. Mirrors
-    /// <c>WorldClient.SendPacketToClient</c>. Resolved from the session on every call rather than
-    /// from <see cref="Client"/>, for the same reason <see cref="SendPacketToServer"/> is: the
-    /// world client is attached to the session after the modern socket binds it.
+    /// Proxy to legacy emulator, now. Goes through the session's server outbox, which drops the
+    /// packet with a warning when the legacy connection is gone: dropping beats throwing inside
+    /// a handler. To hold a packet back, use <see cref="ToServer"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void SendPacketToClient(ServerPacket packet, Opcode delayUntilOpcode = Opcode.MSG_NULL_ACTION)
-        => (Client ?? Session.WorldClient)!.SendPacketToClient(packet, delayUntilOpcode);
+    public void SendPacketToServer(WorldPacket packet) => Session.ToServer.Send(packet);
+
+    /// <summary>
+    /// Proxy to modern client, routed by the packet's connection type through the session's client
+    /// outbox, which parks it until that socket is attached. To hold a packet back, use
+    /// <see cref="ToClient"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SendPacketToClient(ServerPacket packet) => Session.ToClient.Send(packet);
 
     /// <summary>Send on the socket this packet arrived on. Mirrors <c>WorldSocket.SendPacket</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

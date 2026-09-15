@@ -7,6 +7,7 @@ using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Outbox;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -2243,6 +2244,9 @@ public partial class WorldClient
         AfterStoreObjectUpdateHook(guid, objectType, updateMaskArray, updates, auraUpdate, powerUpdate, isCreate, updateData, actuallyChangedValuesMaskArray);
     }
 
+    private static readonly HoldOptions CollisionHeightHold = new(
+        Timeout: TimeSpan.FromSeconds(5), OnTimeout: OutboxTimeoutAction.Release);
+
     private void AfterStoreObjectUpdateHook(WowGuid128 guid, ObjectType objectType, BitArray updateMaskArray, Dictionary<int, UpdateField> updates, AuraUpdate auraUpdate, PowerUpdate? powerUpdate, bool isCreate, ObjectUpdate updateData, BitArray changedValuesMask)
     {
         if (objectType == ObjectType.Player || objectType == ObjectType.ActivePlayer)
@@ -2300,7 +2304,8 @@ public partial class WorldClient
                     Reason = reason,
                     MountDisplayID = (uint) mountDisplayId,
                 };
-                SendPacketToClient(height, Opcode.SMSG_UPDATE_OBJECT);
+                // After the batch whose Values changed the mount or scale has reached the client.
+                GetSession().ToClient.AfterBatch(height, CollisionHeightHold);
             }
         }
     }

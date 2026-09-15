@@ -17,12 +17,15 @@ internal sealed class TestServerPacket(Opcode opcode, int id, ConnectionType con
 {
     public int Id { get; } = id;
 
-    public override void Write() { }
+    /// <summary>Thread that serialized the packet, or 0 if it never was.</summary>
+    public int SerializedOnThread { get; private set; }
+
+    public override void Write() => SerializedOnThread = Environment.CurrentManagedThreadId;
 
     public override string ToString() => $"{GetUniversalOpcode()}#{Id}";
 }
 
-internal readonly record struct ClientWrite(TestServerPacket Packet, ConnectionType? On, int ThreadId);
+internal readonly record struct ClientWrite(TestServerPacket Packet, ConnectionType On, int ThreadId);
 
 /// <summary>Records client writes in order, with the thread that made each one.</summary>
 internal sealed class RecordingClientWire : IClientWire
@@ -30,12 +33,26 @@ internal sealed class RecordingClientWire : IClientWire
     private readonly Lock _lock = new();
     private readonly List<ClientWrite> _writes = [];
 
+    public volatile bool RealmOpen = true;
+    public volatile bool InstanceOpen = true;
+
     /// <summary>Runs after each write is recorded, on the writing thread.</summary>
     public Action<TestServerPacket>? OnWrite { get; set; }
 
-    public void Write(ServerPacket packet) => Record((TestServerPacket)packet, null);
+    public bool TryWrite(ConnectionType connection, ServerPacket packet)
+    {
+        if (!(connection == ConnectionType.Realm ? RealmOpen : InstanceOpen))
+            return false;
 
-    public void WriteOn(ConnectionType connection, ServerPacket packet) => Record((TestServerPacket)packet, connection);
+        var test = (TestServerPacket)packet;
+        lock (_lock)
+            _writes.Add(new ClientWrite(test, connection, Environment.CurrentManagedThreadId));
+
+        OnWrite?.Invoke(test);
+        // The fake never frames the bytes, so return the rental the constructor took.
+        packet.Discard();
+        return true;
+    }
 
     public ClientWrite[] Writes
     {
@@ -47,16 +64,6 @@ internal sealed class RecordingClientWire : IClientWire
     }
 
     public int[] Ids => Writes.Select(w => w.Packet.Id).ToArray();
-
-    private void Record(TestServerPacket packet, ConnectionType? on)
-    {
-        lock (_lock)
-            _writes.Add(new ClientWrite(packet, on, Environment.CurrentManagedThreadId));
-
-        OnWrite?.Invoke(packet);
-        // The fake never serializes, so return the rental the constructor took.
-        packet.Discard();
-    }
 }
 
 internal readonly record struct ServerWrite(WorldPacket Packet, int ThreadId);
@@ -76,10 +83,14 @@ internal sealed class RecordingServerWire : IServerWire
         }
     }
 
+    /// <summary>Runs after each write is recorded, on the writing thread.</summary>
+    public Action<WorldPacket>? OnWrite { get; set; }
+
     public void Write(WorldPacket packet)
     {
         lock (_lock)
             _writes.Add(new ServerWrite(packet, Environment.CurrentManagedThreadId));
+        OnWrite?.Invoke(packet);
     }
 }
 
@@ -92,4 +103,13 @@ internal static class OutboxTestExtensions
     public static bool IsDisposed(this ByteBuffer buffer) => (bool)DisposedField.GetValue(buffer)!;
 
     public static WorldPacket Legacy(uint opcode) => new(opcode);
+
+    /// <summary>A client outbox with both sockets attached, as in the world.</summary>
+    public static ClientOutbox InWorld(RecordingClientWire wire, TimeProvider? time = null)
+    {
+        var outbox = new ClientOutbox(wire, time);
+        outbox.Attach(ConnectionType.Realm);
+        outbox.Attach(ConnectionType.Instance);
+        return outbox;
+    }
 }

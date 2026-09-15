@@ -25,7 +25,7 @@ public class ClientOutboxOrderTests
         // written back to back must reach the wire in that order. Nothing in the outbox may
         // queue one connection's packets behind the other's.
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.Send(new TestServerPacket(Prepare, 1, ConnectionType.Realm));
         outbox.SendOn(ConnectionType.Instance, new TestServerPacket(Start, 2, ConnectionType.Instance));
@@ -33,7 +33,9 @@ public class ClientOutboxOrderTests
         outbox.SendOn(ConnectionType.Instance, new TestServerPacket(Prepare, 4, ConnectionType.Realm));
 
         Assert.Equal([1, 2, 3, 4], wire.Ids);
-        Assert.Equal([null, ConnectionType.Instance, null, ConnectionType.Instance], wire.Writes.Select(w => w.On).ToArray());
+        Assert.Equal(
+            [ConnectionType.Realm, ConnectionType.Instance, ConnectionType.Instance, ConnectionType.Instance],
+            wire.Writes.Select(w => w.On).ToArray());
         Assert.All(wire.Writes, w => Assert.Equal(Environment.CurrentManagedThreadId, w.ThreadId));
         Assert.Equal(0, outbox.PendingCount);
     }
@@ -42,7 +44,7 @@ public class ClientOutboxOrderTests
     public void After_ReleasesRightAfterTheTriggerPacket_BeforeSendReturns()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.After(Unlearn, new TestServerPacket(Failed, 2));
         Assert.Empty(wire.Writes);
@@ -57,7 +59,7 @@ public class ClientOutboxOrderTests
     public void After_WaitsForTheNextOccurrence_NotOneThatAlreadyHappened()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.Send(new TestServerPacket(Unlearn, 1));
         outbox.After(Unlearn, new TestServerPacket(Failed, 2));
@@ -71,7 +73,7 @@ public class ClientOutboxOrderTests
     public void After_SeveralHoldsOnOneTrigger_ReleaseInRegistrationOrder()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.After(Unlearn, new TestServerPacket(Failed, 2));
         outbox.After(Unlearn, new TestServerPacket(Start, 3));
@@ -86,7 +88,7 @@ public class ClientOutboxOrderTests
     public void ReleaseChain_IsBreadthFirst_EarlierTriggerFirst()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.After(Unlearn, new TestServerPacket(Prepare, 2)); // releases Prepare...
         outbox.After(Unlearn, new TestServerPacket(Failed, 3));
@@ -101,7 +103,7 @@ public class ClientOutboxOrderTests
     public void HoldAddedDuringARelease_WaitsForTheNextTrigger()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.After(Unlearn, () => outbox.After(Unlearn, new TestServerPacket(Failed, 9)));
 
@@ -117,7 +119,7 @@ public class ClientOutboxOrderTests
     public void AfterBatch_ReleasedByTheBatchEndSignal()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.AfterBatch(new TestServerPacket(Failed, 2));
         outbox.Send(new TestServerPacket(Start, 1));
@@ -133,7 +135,7 @@ public class ClientOutboxOrderTests
         // If the release path held the lock while writing, a second thread registering a hold
         // would block until the write returned, and this write waits for that thread: deadlock.
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
         bool otherThreadGotIn = false;
 
         wire.OnWrite = packet =>
@@ -154,7 +156,7 @@ public class ClientOutboxOrderTests
     public void ThrowingContinuation_IsIsolated_LaterHoldsStillRelease()
     {
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
 
         outbox.After(Unlearn, () => throw new InvalidOperationException("handler bug"));
         outbox.After(Unlearn, new TestServerPacket(Failed, 2));
@@ -171,7 +173,7 @@ public class ClientOutboxOrderTests
         const int producers = 4;
         const int holdsPerProducer = 500;
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire);
+        var outbox = OutboxTestExtensions.InWorld(wire);
         int registered = 0;
 
         var trigger = Task.Run(() =>
@@ -346,7 +348,7 @@ public class OutboxTimeTests
         // Writing a client packet can read session state, so the timer thread may not do it.
         var time = new FakeTimeProvider();
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire, time);
+        var outbox = OutboxTestExtensions.InWorld(wire, time);
 
         outbox.After(Opcode.SMSG_SEND_UNLEARN_SPELLS, new TestServerPacket(Opcode.SMSG_CAST_FAILED, 7),
             new HoldOptions(Timeout: TimeSpan.FromSeconds(5), OnTimeout: OutboxTimeoutAction.Release));
@@ -365,7 +367,7 @@ public class OutboxTimeTests
     {
         var time = new FakeTimeProvider();
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire, time);
+        var outbox = OutboxTestExtensions.InWorld(wire, time);
 
         outbox.AfterBatch(new TestServerPacket(Opcode.SMSG_CAST_FAILED, 1),
             new HoldOptions(Timeout: TimeSpan.FromSeconds(5), OnTimeout: OutboxTimeoutAction.Release));
@@ -436,7 +438,7 @@ public class OutboxTimeTests
         // packet still held. A later packet must queue behind it rather than go out first.
         var time = new FakeTimeProvider();
         var wire = new RecordingClientWire();
-        var outbox = new ClientOutbox(wire, time);
+        var outbox = OutboxTestExtensions.InWorld(wire, time);
         var key = new HoldKey(HoldKeyKind.Test, 2);
 
         outbox.Paced(key, TimeSpan.FromMilliseconds(100), new TestServerPacket(Opcode.SMSG_CAST_FAILED, 1));

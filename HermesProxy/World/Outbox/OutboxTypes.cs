@@ -28,6 +28,7 @@ internal enum OutboxHoldKind : byte
     Event,
     Gate,
     Timer,
+    Lane,
 }
 
 /// <summary>Named points in a handler that holds can wait for.</summary>
@@ -90,6 +91,14 @@ public enum HoldKeyKind : ushort
 {
     /// <summary>For tests and ad-hoc use; never used by production code.</summary>
     Test = 0,
+    /// <summary>A = rank id. Newest rank-permission edit per rank, see GuildSystem.</summary>
+    GuildRankPermissions = 1,
+    /// <summary>Vanilla multi-attachment mail, paced so the server's antiflood doesn't fire.</summary>
+    MailAntiflood = 2,
+    /// <summary>Lane that runs one partial-stack auction post at a time.</summary>
+    AuctionSplitLane = 3,
+    /// <summary>The running auction post's wait for the split or freed bag slot.</summary>
+    AuctionSplitWait = 4,
 }
 
 /// <summary>How a hold behaves while it waits.</summary>

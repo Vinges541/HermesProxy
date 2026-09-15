@@ -72,7 +72,7 @@ public partial class WorldClient
                 state.DeferredAttackStop = false;
                 state.CurrentAttackTarget = default;
                 WorldPacket stopPacket = new WorldPacket(Opcode.CMSG_ATTACK_STOP);
-                SendPacketToServer(stopPacket, Opcode.MSG_NULL_ACTION);
+                SendPacketToServer(stopPacket);
             }
             // If CurrentAttackTarget is set but no deferred stop, we're switching targets —
             // don't clear the attack target, the new SWING already set it
