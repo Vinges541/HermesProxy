@@ -66,6 +66,14 @@ public partial class WorldClient
     const int KeepAliveIntervalMs = 30_000;
 
     /// <summary>
+    /// How long <see cref="ConnectToWorldServer"/> waits for the legacy world server to accept and
+    /// finish its handshake before giving the modern client an authentication failure. Generous,
+    /// because a loaded server can be slow to answer; bounded, because the caller is a socket
+    /// thread and the alternative is waiting for ever.
+    /// </summary>
+    internal static readonly TimeSpan WorldServerHandshakeTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Last <c>SMSG_AUTH_RESPONSE</c> code the legacy world server sent, or <c>null</c> if the
     /// handshake died before one arrived (socket refused, unknown opcode during the handshake).
     /// Read by <see cref="Server.WorldSocket"/> so the client-facing failure line can name the
@@ -127,6 +135,10 @@ public partial class WorldClient
             var ip = NetworkUtils.ResolveOrDirectIPv4(realm.ExternalAddress);
             WorldClientLogMessages.WorldServerResolved(_melNet, _sourceFile, _netDirNone, realm.ExternalAddress, realm.Port, ip.ToString());
             _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            // This connection is idle whenever the player is, so without probes a legacy server
+            // whose machine disappears leaves ReceiveLoop waiting on a socket that will never
+            // answer, and the session never tears down.
+            NetworkUtils.EnableKeepAlive(_clientSocket, idleSeconds: 30, intervalSeconds: 5, retryCount: 3);
             // Connect to the specified host.
             var endPoint = new IPEndPoint(ip, realm.Port);
             _clientSocket.BeginConnect(endPoint, ConnectCallback, null);
@@ -137,12 +149,35 @@ public partial class WorldClient
             _isSuccessful = false;
         }
 
+        // Covers the TCP connect and the legacy handshake behind it. A server that accepts and
+        // then says nothing used to hold this thread — the modern client's realm socket thread —
+        // for as long as it stayed up.
+        long deadline = Environment.TickCount64 + (long)WorldServerHandshakeTimeout.TotalMilliseconds;
         while (_isSuccessful == null)
         {
+            if (Environment.TickCount64 >= deadline)
+            {
+                Log.Print(LogType.Error,
+                    $"Legacy world server {realm.ExternalAddress}:{realm.Port} did not complete the handshake within {WorldServerHandshakeTimeout.TotalSeconds:F0} s");
+                _isSuccessful = false;
+                CloseClientSocket();
+                break;
+            }
+
             Thread.Sleep(1);
         }
 
         return (bool)_isSuccessful;
+    }
+
+    private void CloseClientSocket()
+    {
+        try
+        {
+            _clientSocket?.Close();
+        }
+        catch (SocketException) { }
+        catch (ObjectDisposedException) { }
     }
 
     public bool IsAuthenticated()
