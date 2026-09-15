@@ -44,6 +44,8 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         public OutboxHoldKind Kind;
         public TPacket? Packet;
         public Action? Continuation;
+        // The work a continuation would do, kept so Peek and Claim can hand it to another caller.
+        public object? State;
         public HoldKey? Key;
         public bool Coalescing;
         public OutboxScope Scope;
@@ -135,6 +137,15 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     public void When(OutboxEvent evt, Action release, in HoldOptions options = default)
         => RegisterEvents(new Hold { Continuation = release }, [evt], options);
 
+    /// <summary>
+    /// Runs <paramref name="release"/> with <paramref name="state"/> the next time <paramref name="evt"/>
+    /// occurs, unless another caller claims the hold first. Give it a <see cref="HoldOptions.Key"/> so
+    /// <see cref="Peek{TState}"/> and <see cref="Claim{TState}"/> can find it.
+    /// </summary>
+    public void When<TState>(OutboxEvent evt, TState state, Action<TState> release, in HoldOptions options = default)
+        where TState : class
+        => RegisterEvents(new Hold { State = state, Continuation = () => release(state) }, [evt], options);
+
     /// <summary>Runs <paramref name="release"/> once every event in <paramref name="events"/> has occurred.</summary>
     public void WhenAll(ReadOnlySpan<OutboxEvent> events, Action release, in HoldOptions options = default)
         => RegisterEvents(new Hold { Continuation = release }, events, options);
@@ -154,6 +165,15 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     /// <summary>Runs <paramref name="release"/> after <paramref name="delay"/>.</summary>
     public void Delay(TimeSpan delay, Action release, in HoldOptions options = default)
         => RegisterTimer(new Hold { Continuation = release }, delay, options);
+
+    /// <summary>
+    /// Runs <paramref name="release"/> with <paramref name="state"/> after <paramref name="delay"/>,
+    /// unless another caller claims the hold first. For work that normally someone else picks up, with
+    /// the delay as the fallback.
+    /// </summary>
+    public void Delay<TState>(TimeSpan delay, TState state, Action<TState> release, in HoldOptions options = default)
+        where TState : class
+        => RegisterTimer(new Hold { State = state, Continuation = () => release(state) }, delay, options);
 
     /// <summary>
     /// Sends packets that share <paramref name="key"/> at least <paramref name="interval"/> apart,
@@ -398,6 +418,71 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         OutboxLogMessages.Cancelled(_log, _direction, cancelled.Count, key.Kind, key.A);
         foreach (var hold in cancelled)
             DropHold(hold);
+        return true;
+    }
+
+    /// <summary>
+    /// The state of the oldest waiting hold named <paramref name="key"/> that carries a
+    /// <typeparamref name="TState"/>, or null. The hold keeps waiting; see <see cref="Claim{TState}"/>.
+    /// </summary>
+    public TState? Peek<TState>(HoldKey key) where TState : class
+    {
+        if (Volatile.Read(ref _pending) == 0)
+            return null;
+
+        lock (_lock)
+        {
+            if (_byKey.TryGetValue(key, out var keyed))
+            {
+                foreach (var hold in keyed)
+                {
+                    if (hold.State is TState state)
+                        return state;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Takes over the waiting hold named <paramref name="key"/> that carries <paramref name="state"/>:
+    /// it is never released, and the caller does its work instead. False when that hold was already
+    /// released, dropped or claimed, in which case the caller must not do the work.
+    /// </summary>
+    /// <remarks>
+    /// For work that has two ways to go out: on its own when its trigger fires, or folded into
+    /// something else that goes out first. <see cref="Peek{TState}"/> the state, decide, then claim
+    /// that same state, so a hold registered in between is never taken by mistake.
+    /// </remarks>
+    public bool Claim<TState>(HoldKey key, TState state) where TState : class
+    {
+        Hold? claimed = null;
+        lock (_lock)
+        {
+            if (!_byKey.TryGetValue(key, out var keyed))
+                return false;
+
+            foreach (var hold in keyed)
+            {
+                if (ReferenceEquals(hold.State, state))
+                {
+                    claimed = hold;
+                    break;
+                }
+            }
+            if (claimed == null)
+                return false;
+
+            List<Hold>? completed = null;
+            Complete(claimed, ref completed);
+            PurgeCompleted();
+            ArmTimer();
+        }
+
+        if (_log.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+            OutboxLogMessages.Claimed(_log, _direction, key.Kind, key.A, _time.GetElapsedTime(claimed.RegisteredAt).TotalMilliseconds);
+        claimed.Continuation = null;
+        claimed.State = null;
         return true;
     }
 
@@ -928,6 +1013,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         else if (hold.Continuation is { } continuation)
         {
             hold.Continuation = null;
+            hold.State = null;
             try
             {
                 continuation();
@@ -954,6 +1040,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     private void DropHold(Hold hold)
     {
         hold.Continuation = null;
+        hold.State = null;
         if (hold.Packet is { } packet)
         {
             hold.Packet = null;

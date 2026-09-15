@@ -120,4 +120,11 @@ internal static partial class OutboxLogMessages
         Message = "[Outbox] client dropped {Opcode}: {Max} packets already parked")]
     public static partial void ParkOverflow(
         ILogger logger, int max, Enums.Opcode opcode);
+
+    [LoggerMessage(
+        EventId = 1515,
+        Level = LogLevel.Debug,
+        Message = "[Outbox] {Direction} claimed a hold for key {KeyKind}:{KeyValue} after {HeldMs:F1} ms")]
+    public static partial void Claimed(
+        ILogger logger, string direction, HoldKeyKind keyKind, ulong keyValue, double heldMs);
 }

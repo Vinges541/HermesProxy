@@ -3,6 +3,7 @@ using HermesProxy.Enums;
 using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Outbox;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
@@ -11,6 +12,20 @@ namespace HermesProxy.World.Client;
 
 public partial class WorldClient
 {
+    /// <summary>
+    /// A V3_4_3 pet spell bar that arrived before its pet's create. Claimed and sent, with the pet
+    /// guid re-translated, by whichever update path sends the create: <see cref="SendUpdateBatch"/>
+    /// or <see cref="FlushDeferredUpdate"/>. A newer message, or a clear, replaces it.
+    /// </summary>
+    private sealed record HeldPetSpells(PetSpells Spells, WowGuid64 LegacyGuid)
+    {
+        public static readonly HoldKey Key = new(HoldKeyKind.PetSpells);
+
+        // The create normally follows within milliseconds. If it never comes, send the bar anyway
+        // with the best guid there is.
+        public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+    }
+
     // Handlers for SMSG opcodes coming the legacy world server
     [HandlesSmsg(Opcode.SMSG_PET_SPELLS_MESSAGE)]
     internal void HandlePetSpellsMessage(WorldPacket packet)
@@ -22,8 +37,7 @@ public partial class WorldClient
         // Equal to "Clear spells" pre cataclysm
         if (guid.IsEmpty())
         {
-            GetSession().GameState.PendingPetSpells = null;
-            GetSession().GameState.PendingPetSpellsLegacyGuid = null;
+            GetSession().ToClient.Cancel(HeldPetSpells.Key);
             PetClearSpells clear = new();
             SendPacketToClient(clear);
             return;
@@ -144,15 +158,17 @@ public partial class WorldClient
         // creature_template.entry (e.g. 2031). The pet's CreateObject will later
         // ship with the corrected GUID — so the client receives a spells message
         // for a unit GUID that never appears, and never binds the pet UI.
-        // Hold the parsed message; UpdateHandler.HandleUpdateObject flushes it
+        // Hold the parsed message; UpdateHandler.SendUpdateBatch flushes it
         // (with re-translated PetGUID) right after the pet's CreateObject is
         // sent. If the pet is already in ClientKnownGuids (TC backends, or a
         // second SMSG_PET_SPELLS_MESSAGE on the same pet), forward immediately.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
             !GetSession().GameState.ClientKnownGuids.Contains(spells.PetGUID))
         {
-            GetSession().GameState.PendingPetSpells = spells;
-            GetSession().GameState.PendingPetSpellsLegacyGuid = guid;
+            var toClient = GetSession().ToClient;
+            toClient.Cancel(HeldPetSpells.Key);
+            toClient.Delay(HeldPetSpells.Timeout, new HeldPetSpells(spells, guid), SendHeldPetSpellsLate,
+                new HoldOptions(Key: HeldPetSpells.Key));
             Log.Print(LogType.Trace,
                 $"[PetSpellsHold] caching SMSG_PET_SPELLS_MESSAGE for legacy guid={guid} stalePetGUID={spells.PetGUID} (pet not yet in ClientKnownGuids; LEARNED_SPELLS already emitted ahead of CreateObject)");
             return;
@@ -165,6 +181,12 @@ public partial class WorldClient
         Log.Print(LogType.Trace,
             $"[PetSpellbookTab] emit summary: PetGUID={spells.PetGUID} family={spells.CreatureFamily} spec={spells.Specialization} → SMSG_PET_SPELLS_MESSAGE");
         SendPacketToClient(spells);
+    }
+
+    private void SendHeldPetSpellsLate(HeldPetSpells held)
+    {
+        held.Spells.PetGUID = held.LegacyGuid.To128(GetSession().GameState);
+        SendPacketToClient(held.Spells);
     }
 
     [HandlesSmsg(Opcode.SMSG_PET_ACTION_SOUND)]

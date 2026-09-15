@@ -16,7 +16,10 @@ public enum OutboxEventKind : byte
     ItemTemplate = 4,
     /// <summary>The item text with this id arrived.</summary>
     ItemText = 5,
-    /// <summary>The client has received a create for this guid.</summary>
+    /// <summary>
+    /// The client has this guid's object. Raised for the player at the end of every update batch
+    /// while the client knows it, so a hold registered late still goes out at the next batch.
+    /// </summary>
     GuidKnown = 6,
     /// <summary>Internal: a gate opened. Raised by <c>SetGate</c>, never by callers.</summary>
     GateOpened = 7,
@@ -99,6 +102,16 @@ public enum HoldKeyKind : ushort
     AuctionSplitLane = 3,
     /// <summary>The running auction post's wait for the split or freed bag slot.</summary>
     AuctionSplitWait = 4,
+    /// <summary>A = guid low, B = guid high. A V3_4_3 corpse destroy held to the end of the next update batch.</summary>
+    CorpseDestroy = 5,
+    /// <summary>V3_4_3 toy box sync held until the client has the player object.</summary>
+    ToysSync = 6,
+    /// <summary>V3_4_3 pet spell bar held until the pet's create has gone out.</summary>
+    PetSpells = 7,
+    /// <summary>V3_4_3 pet create batches held until the client has the player object.</summary>
+    PetUpdateBatch = 8,
+    /// <summary>The newest pre-3.3.0 mail list, held until its letter texts arrive.</summary>
+    MailList = 9,
 }
 
 /// <summary>How a hold behaves while it waits.</summary>
