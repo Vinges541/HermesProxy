@@ -314,9 +314,7 @@ public sealed class GameSessionData
     }
     public uint LastWhoRequestId;
     public WowGuid128 CurrentPetGuid;
-    public WowGuid64 CurrentAttackTarget;        // active CMSG_ATTACK_SWING victim, cleared on ATTACK_STOP/CANCEL_COMBAT
-    public bool WaitingForAttackStart;           // true between CMSG_ATTACK_SWING and SMSG_ATTACK_START
-    public bool DeferredAttackStop;              // CMSG_ATTACK_STOP received while waiting for SMSG_ATTACK_START
+    public WowGuid64 CurrentAttackTarget;        // active CMSG_ATTACK_SWING victim; see MeleeAttackOrder
     public uint[] CurrentArenaTeamIds = new uint[3];
     // Personal rated standing per arena bracket, mirrored from the legacy arena-team player
     // fields. The 3.4.3 client asks for this with CMSG_REQUEST_RATED_PVP_INFO every time the PvP
@@ -1943,6 +1941,7 @@ public class GlobalSessionData
         RealmManager = new RealmManager(clientOptions, networkOptions);
         ToClient = new ClientOutbox(new SessionClientWire(this));
         ToServer = new ServerOutbox(new SessionServerWire(this));
+        ToServer.SetGate(OutboxGate.SwingAnswered, open: true);
         GameState = GameSessionData.CreateNewGameSessionData(this);
     }
 
@@ -1958,6 +1957,8 @@ public class GlobalSessionData
         ToClient.DiscardParked();
         ToClient.SetGate(OutboxGate.InWorld, open: false);
         ToServer.SetGate(OutboxGate.InWorld, open: false);
+        // The new character has swung at nothing, and Discard(Session) closes every gate.
+        ToServer.SetGate(OutboxGate.SwingAnswered, open: true);
         GameState = GameSessionData.CreateNewGameSessionData(this);
     }
 

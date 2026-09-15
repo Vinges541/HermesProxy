@@ -88,8 +88,8 @@ migration moves them here one slice at a time. What has moved and what hasn't is
 
 ```
                  Before B          After B                         After C (now)    After D-E
- hold-backs      ~20 bespoke       transport + sleeps moved;       outbox only,     outbox only
-                                   data holds still bespoke        attack-stop left
+ hold-backs      ~20 bespoke       transport + sleeps moved;       outbox only      outbox only
+                                   data holds still bespoke
  threads         4+                4+                              4+               1 owner at a time
  locks           4 session         ObjectCache + DeferredUpdates   ObjectCache      none on session state
                                    + outbox + route                + outbox + route
@@ -121,8 +121,15 @@ Two fixes rode along: a pet batch whose player create was never deferred used to
 an older mail list could be sent after a newer one. A pet batch that carries the player's own create
 is no longer held, and `SMSG_NEW_WORLD` cancels pet batches held for the old map.
 
-**Still bespoke:** `DeferredAttackStop` / `WaitingForAttackStart` (needs one owner per session, slice D).
-`PendingCreateCharName` and `PendingEnchantmentLog` are correlation, not holds, and stay domain logic.
+**Also moved:** `DeferredAttackStop` / `WaitingForAttackStart` → `World/Server/Systems/MeleeAttackOrder.cs`.
+A `CMSG_ATTACK_STOP` is `When(OutboxGate.SwingAnswered)` under key `AttackStop`: the swing closes the
+gate, `SMSG_ATTACK_START`, a swing error, a player stop and `SMSG_CANCEL_COMBAT` open it, and a new
+swing `Cancel`s the held stop so the server never sees one wedged between two swings. 2 s, Release.
+The plan had this waiting for slice D because the two bools were written on the socket thread and read
+on the legacy thread; the gate removes the race, so it landed here instead.
+
+**Still bespoke:** `PendingCreateCharName` and `PendingEnchantmentLog` — correlation, not holds, so
+they stay domain logic.
 
 ## Which call for which situation
 

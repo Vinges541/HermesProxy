@@ -49,6 +49,11 @@ public enum OutboxGate : byte
 {
     /// <summary>The player is in the world (legacy <c>SMSG_LOGIN_VERIFY_WORLD</c> seen).</summary>
     InWorld = 0,
+    /// <summary>
+    /// Server outbox: open unless our last <c>CMSG_ATTACK_SWING</c> is still waiting for the server's
+    /// answer. Opened for every new GameState. See <c>MeleeAttackOrder</c>.
+    /// </summary>
+    SwingAnswered = 1,
 }
 
 /// <summary>What a hold is tied to, so tearing that thing down drops the hold with it.</summary>
@@ -112,6 +117,8 @@ public enum HoldKeyKind : ushort
     PetUpdateBatch = 8,
     /// <summary>The newest pre-3.3.0 mail list, held until its letter texts arrive.</summary>
     MailList = 9,
+    /// <summary>A <c>CMSG_ATTACK_STOP</c> held until the server answers the swing before it.</summary>
+    AttackStop = 10,
 }
 
 /// <summary>How a hold behaves while it waits.</summary>
