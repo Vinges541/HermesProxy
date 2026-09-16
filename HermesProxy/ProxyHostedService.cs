@@ -174,6 +174,11 @@ internal sealed class ProxyHostedService : BackgroundService
                         {
                             Log.Print(LogType.Server, gc.ToSummaryLine());
                         }
+
+                        // How long packets waited for their session's owner thread. Flat here means
+                        // single-owner dispatch is costing the client nothing.
+                        if (World.Session.SessionExecutor.SummaryLine() is { } executorLine)
+                            Log.Print(LogType.Server, executorLine);
                     }
                 }
             }
