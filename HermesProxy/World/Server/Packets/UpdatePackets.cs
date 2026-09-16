@@ -613,9 +613,13 @@ public class UpdateObject : ServerPacket
     private static readonly Microsoft.Extensions.Logging.ILogger _melObjLife =
         Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
 
+    // ModernVersion.Build is fixed for the test process (V1_14_2), so the V3_4_3 arm is reached
+    // through this hook, the same escape hatch ArenaPackets uses. Null in production.
+    internal static bool? ForceV343ForTests;
+
     public static int FilterV3_4_3Values(UpdateObject obj, GameSessionData gameState)
     {
-        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+        if (!(ForceV343ForTests ?? ModernVersion.Build == ClientVersionBuild.V3_4_3_54261))
             return 0;
 
         int beforeCount = obj.ObjectUpdates.Count;
@@ -632,6 +636,10 @@ public class UpdateObject : ServerPacket
             {
                 known.Add(u.Guid);
                 createKept++;
+                if (u.Guid == gameState.CurrentPlayerGuid)
+                    gameState.ClientHasPlayerObject = true;
+                else if (u.Guid == gameState.CurrentPetGuid)
+                    gameState.ClientHasPetObject = true;
                 World.Logging.ObjectLifecycleLogMessages.CreateRegistered(
                     _melObjLife, u.Guid.Low, u.Guid.High, u.Type.ToString());
             }
@@ -644,7 +652,14 @@ public class UpdateObject : ServerPacket
         {
             if (u.Type != UpdateTypeModern.Values)
                 return false;
-            if (!known.Contains(u.Guid))
+            // The player's own Values are the one exception: at login the player's create can
+            // still be held for item templates (issue #34), and at a teleport the client is
+            // between SMSG_NEW_WORLD and the re-create. An update landing in either window
+            // carries real state — the stance a warrior logs in with, a mount's display id —
+            // and dropping it left the client with an empty action bar and no mount under the
+            // character (issue #300). SendUpdateBatch splits these out and holds them until the
+            // client has the player, so none of them reaches the wire ahead of the create.
+            if (!known.Contains(u.Guid) && u.Guid != gameState.CurrentPlayerGuid)
             {
                 valuesUnknownStripped++;
                 World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
@@ -753,36 +768,11 @@ public class UpdateObject : ServerPacket
                     if (go.ParentRotation[i].HasValue) return false;
         }
 
-        var unit = u.UnitData;
-        if (unit != null)
-        {
-            if (unit.Health.HasValue || unit.MaxHealth.HasValue || unit.DisplayID.HasValue) return false;
-            if (unit.Charm != null || unit.Summon != null || unit.CharmedBy != null) return false;
-            if (unit.SummonedBy != null || unit.CreatedBy != null || unit.Target != null) return false;
-            if (unit.Critter != null || unit.BattlePetCompanionGUID != null) return false;
-            if (unit.ChannelData != null || unit.ChannelObject != null) return false;
-            if (unit.RaceId.HasValue || unit.ClassId.HasValue || unit.SexId.HasValue) return false;
-            if (unit.Level.HasValue || unit.EffectiveLevel.HasValue || unit.DisplayPower.HasValue) return false;
-            if (unit.FactionTemplate.HasValue || unit.Flags.HasValue || unit.Flags2.HasValue || unit.Flags3.HasValue) return false;
-            if (unit.AuraState.HasValue) return false;
-            if (unit.BoundingRadius.HasValue || unit.CombatReach.HasValue) return false;
-            if (unit.NativeDisplayID.HasValue || unit.MountDisplayID.HasValue) return false;
-            if (unit.HoverHeight.HasValue || unit.GuildGUID != null) return false;
-            if (unit.MinDamage.HasValue || unit.MaxDamage.HasValue) return false;
-            if (unit.StandState.HasValue || unit.AnimTier.HasValue) return false;
-            if (unit.AttackPower.HasValue || unit.RangedAttackPower.HasValue) return false;
-            if (unit.BaseMana.HasValue || unit.BaseHealth.HasValue) return false;
-            for (int i = 0; i < unit.NpcFlags.Length; i++)
-                if (unit.NpcFlags[i].HasValue && unit.NpcFlags[i] != 0) return false;
-            for (int i = 0; i < unit.Power.Length; i++)
-                if (unit.Power[i].HasValue) return false;
-            for (int i = 0; i < unit.MaxPower.Length; i++)
-                if (unit.MaxPower[i].HasValue) return false;
-            for (int i = 0; i < unit.Stats.Length; i++)
-                if (unit.Stats[i].HasValue) return false;
-            for (int i = 0; i < 7; i++)
-                if (unit.Resistances[i].HasValue) return false;
-        }
+        // UnitData answers for itself. The list that used to live here covered 47 of its 116
+        // fields, so a delta carrying only one of the other 69 was called empty and dropped —
+        // ShapeshiftForm among them, which is the warrior stance of issue #300.
+        if (u.UnitData != null && u.UnitData.HasAnyValue()) return false;
+
         var player = u.PlayerData;
         if (player != null)
         {
