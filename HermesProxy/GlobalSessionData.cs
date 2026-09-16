@@ -1,4 +1,4 @@
-﻿using HermesProxy.Auth;
+using HermesProxy.Auth;
 using HermesProxy.Configuration.Options;
 using HermesProxy.World;
 using HermesProxy.World.Client;
@@ -116,6 +116,13 @@ public sealed class GameSessionData
     // (e.g. ObjectUpdateBuilder) that need helpers on GlobalSessionData like
     // GetBnetAccountGuidForPlayer without threading the session through every call.
     public GlobalSessionData GlobalSession = null!;
+
+    /// <summary>
+    /// Debug-only: the object cache should now be touched only by the session's owner thread. A
+    /// playtest that never fires this is the evidence for deleting <see cref="ObjectCacheLock"/>.
+    /// </summary>
+    [System.Diagnostics.Conditional("DEBUG")]
+    private void AssertObjectCacheOwner() => GlobalSession?.Executor.AssertOwner("object cache");
     public bool HasWsgHordeFlagCarrier;
     public bool HasWsgAllyFlagCarrier;
     public bool ChannelDisplayList;
@@ -1634,6 +1641,7 @@ public sealed class GameSessionData
     }
     public WowGuid128 GetPetGuidByNumber(uint petNumber)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             return PetModernGuidByNumber.TryGetValue(petNumber, out var guid) ? guid : default;
@@ -1642,6 +1650,7 @@ public sealed class GameSessionData
 
     public void RegisterPet(WowGuid64 legacyGuid, WowGuid128 modernGuid, uint realEntry, uint petNumber)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             PetRealEntryByLegacyGuid[legacyGuid] = realEntry;
@@ -1652,6 +1661,7 @@ public sealed class GameSessionData
 
     public uint? GetPetRealEntryFromLegacy(WowGuid64 legacyGuid)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             return PetRealEntryByLegacyGuid.TryGetValue(legacyGuid, out var entry) ? entry : null;
@@ -1660,6 +1670,7 @@ public sealed class GameSessionData
 
     public WowGuid64? GetLegacyPetGuid(WowGuid128 modernGuid)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             return PetLegacyGuidByModern.TryGetValue(modernGuid, out var legacy) ? legacy : null;
@@ -1681,6 +1692,7 @@ public sealed class GameSessionData
     {
         if (stale.GetHighType() != HighGuidType.Pet) return null;
         uint realEntry;
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             if (!PetModernGuidByNumber.TryGetValue(stale.GetEntry(), out var registered))
@@ -1827,6 +1839,7 @@ public sealed class GameSessionData
 
     public Dictionary<int, UpdateField>? GetCachedObjectFieldsLegacy(WowGuid128 guid)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             ObjectCacheLegacy.TryGetValue(guid, out var dict);
@@ -1836,6 +1849,7 @@ public sealed class GameSessionData
 
     public UpdateFieldsArray? GetCachedObjectFieldsModern(WowGuid128 guid)
     {
+        AssertObjectCacheOwner();
         lock (ObjectCacheLock)
         {
             ObjectCacheModern.TryGetValue(guid, out var array);
@@ -1949,6 +1963,9 @@ public class GlobalSessionData
         Executor = new SessionExecutor(nameof(GlobalSessionData));
         ToClient = new ClientOutbox(new SessionClientWire(this));
         ToServer = new ServerOutbox(new SessionServerWire(this));
+        // Deadlines are session work: they run on the owner, not on the timer thread.
+        ToClient.RunDeadlinesOn(Executor);
+        ToServer.RunDeadlinesOn(Executor);
         ToServer.SetGate(OutboxGate.SwingAnswered, open: true);
         GameState = GameSessionData.CreateNewGameSessionData(this);
     }

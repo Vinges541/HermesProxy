@@ -1052,7 +1052,20 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     void HandleEnterEncryptedModeAck()
     {
+        // Inline, and only this: the next frame on this socket is decrypted by this same thread, so
+        // the crypt has to be live before this method returns.
         _worldCrypt.Initialize(_encryptKey);
+
+        // The rest binds the socket to the session and sends the login burst, which is session work.
+        // Posting it also puts the park drain on the owner instead of a socket thread.
+        if (_globalSession is { } session)
+            session.Executor.Post(static self => ((WorldSocket)self!).FinishEnterEncryptedMode(), this);
+        else
+            FinishEnterEncryptedMode();
+    }
+
+    private void FinishEnterEncryptedMode()
+    {
         if (_connectType == ConnectionType.Realm)
         {
             var worldClient = GetSession().WorldClient;

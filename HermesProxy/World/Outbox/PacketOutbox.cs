@@ -109,6 +109,23 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
         _onOverflow = onOverflow;
     }
 
+    /// <summary>
+    /// The session's owner thread, once it has one. A deadline then runs there instead of on the
+    /// timer thread, which is what lets a timed-out hold touch <c>GameState</c> at all — without an
+    /// owner the timer can only act on holds that need no session state.
+    /// </summary>
+    private Session.SessionExecutor? _owner;
+
+    internal void RunDeadlinesOn(Session.SessionExecutor owner) => _owner = owner;
+
+    /// <summary>
+    /// Debug-only: every hold mutation should now come from the session's owner. This is the
+    /// evidence for deleting <c>_lock</c> — if a playtest with assertions on never fires it, the
+    /// lock is guarding against a thread that no longer exists.
+    /// </summary>
+    [System.Diagnostics.Conditional("DEBUG")]
+    private void AssertOwner(string what) => _owner?.AssertOwner($"{_direction} outbox {what}");
+
     /// <summary>Holds still waiting.</summary>
     public int PendingCount => Volatile.Read(ref _pending);
 
@@ -366,6 +383,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     /// </summary>
     public void Notify(OutboxEvent evt)
     {
+        AssertOwner("Notify");
         if (Volatile.Read(ref _pending) == 0)
             return;
 
@@ -382,6 +400,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     /// <summary>Opens or closes a gate. Opening releases every hold waiting on it.</summary>
     public void SetGate(OutboxGate gate, bool open)
     {
+        AssertOwner("SetGate");
         List<Hold>? released = null;
         lock (_lock)
         {
@@ -531,6 +550,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     /// </summary>
     public void Discard(OutboxScope scope)
     {
+        AssertOwner("Discard");
         List<Hold>? discarded = null;
         lock (_lock)
         {
@@ -601,6 +621,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
 
     private void RegisterEvents(Hold hold, ReadOnlySpan<OutboxEvent> events, in HoldOptions options)
     {
+        AssertOwner("register");
         hold.Kind = OutboxHoldKind.Event;
         if (events.IsEmpty)
         {
@@ -683,6 +704,7 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
 
     private void RegisterTimer(Hold hold, TimeSpan delay, in HoldOptions options)
     {
+        AssertOwner("register");
         hold.Kind = OutboxHoldKind.Timer;
         bool refused = false;
         lock (_lock)
@@ -922,24 +944,37 @@ public abstract class PacketOutbox<TPacket> : IDisposable where TPacket : class
     {
         try
         {
-            List<Hold>? released = null;
-            List<Hold>? dropped = null;
-            lock (_lock)
+            // With an owner, the deadline is session work like any other: posted, run in order with
+            // the packets around it, and free to touch state the timer thread must not.
+            if (_owner is { } owner)
             {
-                if (_disposed)
-                    return;
-                _timerDue = long.MaxValue;
-                CollectDue(_time.GetTimestamp(), onTimerThread: true, ref released, ref dropped);
-                ArmTimer();
+                owner.Post(static self => ((PacketOutbox<TPacket>)self!).RunDue(onTimerThread: false), this);
+                return;
             }
 
-            ActOnDue(released, dropped);
+            RunDue(onTimerThread: true);
         }
         catch (Exception ex)
         {
             // Timer callbacks must never throw: an unhandled exception here ends the process.
             OutboxLogMessages.CalloutFailed(_log, ex, _direction, "timer");
         }
+    }
+
+    private void RunDue(bool onTimerThread)
+    {
+        List<Hold>? released = null;
+        List<Hold>? dropped = null;
+        lock (_lock)
+        {
+            if (_disposed)
+                return;
+            _timerDue = long.MaxValue;
+            CollectDue(_time.GetTimestamp(), onTimerThread, ref released, ref dropped);
+            ArmTimer();
+        }
+
+        ActOnDue(released, dropped);
     }
 
     private void ActOnDue(List<Hold>? released, List<Hold>? dropped)
