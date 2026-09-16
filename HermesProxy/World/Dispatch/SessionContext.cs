@@ -76,7 +76,13 @@ public readonly struct SessionContext
     public GameSessionData GameState
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => Session.GameState;
+        get
+        {
+            // Debug builds only, and compiled out entirely in Release: catches a thread reaching
+            // session state while the executor's owner is mid-packet.
+            Session.Executor.AssertOwner("GameState");
+            return Session.GameState;
+        }
     }
 
     /// <summary>

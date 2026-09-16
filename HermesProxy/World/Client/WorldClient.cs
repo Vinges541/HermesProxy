@@ -65,6 +65,11 @@ public partial class WorldClient
     uint _keepAlivePingSerial;
     const int KeepAliveIntervalMs = 30_000;
 
+    // One delegate for the life of the connection, so posting a packet to the executor allocates
+    // nothing per packet.
+    private Action<object?>? _handlePacketOnOwnerCache;
+    private Action<object?> HandlePacketOnOwnerDelegate => _handlePacketOnOwnerCache ??= HandlePacketOnOwner;
+
     /// <summary>
     /// How long <see cref="ConnectToWorldServer"/> waits for the legacy world server to accept and
     /// finish its handshake before giving the modern client an authentication failure. Generous,
@@ -375,10 +380,10 @@ public partial class WorldClient
                         return;
                     }
 
-                    using WorldPacket packet = new WorldPacket(buffer, (int)packetSize, isPooled: true);
+                    WorldPacket packet = new WorldPacket(buffer, (int)packetSize, isPooled: true);
                     packetOwnsBuffer = true;
                     packet.SetReceiveTime(Environment.TickCount);
-                    HandlePacket(packet);
+                    DispatchPacket(packet);
                 }
                 finally
                 {
@@ -488,6 +493,35 @@ public partial class WorldClient
         // flip _isSuccessful to false and abort an otherwise healthy handshake.
         return op == Opcode.SMSG_WARDEN_DATA
             || op == Opcode.SMSG_CACHE_VERSION;
+    }
+
+    /// <summary>
+    /// Hands one legacy packet to the session's owner thread, and with it the pooled buffer: the
+    /// receive loop must not return that buffer while a queued handler still has to read it.
+    /// </summary>
+    /// <remarks>
+    /// The handshake is the exception and runs where it arrived. <see cref="SendAuthResponse"/>
+    /// turns encryption on immediately after writing CMSG_AUTH_SESSION, and the thread that would
+    /// otherwise own the session is the realm socket's, parked in
+    /// <see cref="ConnectToWorldServer"/> waiting for exactly this reply — posting it there would
+    /// deadlock until the handshake timeout.
+    /// </remarks>
+    private void DispatchPacket(WorldPacket packet)
+    {
+        if (_isSuccessful == null || _globalSession == null)
+        {
+            using (packet)
+                HandlePacket(packet);
+            return;
+        }
+
+        _globalSession.Executor.Post(HandlePacketOnOwnerDelegate, packet);
+    }
+
+    private void HandlePacketOnOwner(object? state)
+    {
+        using var packet = (WorldPacket)state!;
+        HandlePacket(packet);
     }
 
     private unsafe void HandlePacket(WorldPacket packet)
@@ -798,8 +832,18 @@ public partial class WorldClient
 
     private void SendKeepAlivePing(object? state)
     {
-        uint serial = Interlocked.Increment(ref _keepAlivePingSerial);
-        SendPing(serial | 0x80000000, 0);
+        // Through the executor like any other work: a ping written from the timer thread would
+        // interleave with whatever the owner is sending.
+        var session = _globalSession;
+        if (session == null)
+            return;
+
+        session.Executor.Post(static client =>
+        {
+            var self = (WorldClient)client!;
+            uint serial = Interlocked.Increment(ref self._keepAlivePingSerial);
+            self.SendPing(serial | 0x80000000, 0);
+        }, this);
     }
 
 }

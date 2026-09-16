@@ -7,6 +7,7 @@ using HermesProxy.World.Objects;
 using HermesProxy.World.Outbox;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
+using HermesProxy.World.Session;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -1924,6 +1925,12 @@ public class GlobalSessionData
     /// <summary>Packets to the legacy server, sent now or held. See World/Outbox/CLAUDE.md.</summary>
     public ServerOutbox ToServer { get; }
 
+    /// <summary>
+    /// The one thread at a time that runs this session's work. Packet handlers, timer callbacks and
+    /// teardown are posted here rather than run wherever they arrived. See World/Session/CLAUDE.md.
+    /// </summary>
+    public SessionExecutor Executor { get; }
+
     public GlobalSessionData(
         ClientOptions clientOptions,
         LegacyServerOptions legacyServerOptions,
@@ -1939,6 +1946,7 @@ public class GlobalSessionData
         PacketLogContext = new PacketLogContext(diagnosticsOptions.PacketsLog, clientOptions.ClientBuild);
 
         RealmManager = new RealmManager(clientOptions, networkOptions);
+        Executor = new SessionExecutor(nameof(GlobalSessionData));
         ToClient = new ClientOutbox(new SessionClientWire(this));
         ToServer = new ServerOutbox(new SessionServerWire(this));
         ToServer.SetGate(OutboxGate.SwingAnswered, open: true);

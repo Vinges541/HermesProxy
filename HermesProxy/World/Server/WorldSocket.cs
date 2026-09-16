@@ -441,12 +441,39 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 SendServerTimeOffset();
                 break;
             default:
-                HandlePacket(packet);
+                DispatchPacket(packet);
                 break;
         }
 
         return ReadDataHandlerResult.Ok;
     }
+
+    /// <summary>
+    /// Hands one client packet to the session's owner thread. The packet owns its buffer —
+    /// <see cref="ReadHeader"/> sizes a fresh one per frame — so the socket can read the next frame
+    /// while this one is still being handled.
+    /// </summary>
+    /// <remarks>
+    /// The connection-level opcodes above stay on the socket thread: they run before a session
+    /// exists, or they turn encryption on, which has to happen before the next frame is decrypted
+    /// here.
+    /// </remarks>
+    private void DispatchPacket(WorldPacket packet)
+    {
+        if (_globalSession == null)
+        {
+            HandlePacket(packet);
+            return;
+        }
+
+        _globalSession.Executor.Post(HandlePacketOnOwnerDelegate, packet);
+    }
+
+    private Action<object?>? _handlePacketOnOwnerCache;
+
+    // Built once per socket, so posting a packet allocates nothing.
+    private Action<object?> HandlePacketOnOwnerDelegate =>
+        _handlePacketOnOwnerCache ??= state => HandlePacket((WorldPacket)state!);
 
     public unsafe void HandlePacket(WorldPacket packet)
     {

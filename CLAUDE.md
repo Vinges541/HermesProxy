@@ -81,7 +81,9 @@ Modern Client <---TCP-----> WorldServer ──┘                   WorldClient 
 - **Delaying or reordering a packet** goes through the session's outboxes, `ctx.ToClient` /
   `ctx.ToServer`. Never add a new pending queue or a `Thread.Sleep`. See
   [HermesProxy/World/Outbox/CLAUDE.md](HermesProxy/World/Outbox/CLAUDE.md).
-- **Threading today:** the realm socket, the instance socket, the legacy receive loop and the timers
-  all run handlers concurrently against the same session. Cross-socket send order comes only from
-  synchronous writes on the calling thread. Don't introduce a per-socket send queue (see the outbox
-  handbook for the reverted attempt).
+- **Threading:** handlers, timer callbacks and teardown are posted to the session's
+  `SessionExecutor`, which runs one of them at a time — inline on the posting thread when the session
+  is free. See [HermesProxy/World/Session/CLAUDE.md](HermesProxy/World/Session/CLAUDE.md) for what is
+  posted and what deliberately isn't (the legacy handshake and the connection-level opcodes).
+  Cross-socket send order still comes from synchronous writes on the calling thread. Don't introduce
+  a per-socket send queue (see the outbox handbook for the reverted attempt).
