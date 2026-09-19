@@ -364,7 +364,8 @@ public partial class WorldClient
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.ReadBool(); // Has Transport
 
-        HashSet<uint> missingItemTemplates = new HashSet<uint>();
+        // Null until an item create names an unknown template, which almost no batch does.
+        HashSet<uint>? missingItemTemplates = null;
         List<AuraUpdate> auraUpdates = new List<AuraUpdate>();
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
 
@@ -519,7 +520,7 @@ public partial class WorldClient
                         if (updateData.ObjectData.EntryID != null &&
                             !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
                         {
-                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                            (missingItemTemplates ??= []).Add((uint)updateData.ObjectData.EntryID);
                         }
                     }
 
@@ -543,8 +544,9 @@ public partial class WorldClient
                                 filtered = !MayForwardTransport(legacyHigh, updateData);
                                 if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
                                     RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
-                                Log.Print(LogType.Trace,
-                                    $"{(filtered ? "Skipping" : "Forwarding")} {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.TransportCreate(_melUpdateValues,
+                                    filtered ? "Skipping" : "Forwarding", "CreateObject1", legacyHigh,
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -552,13 +554,15 @@ public partial class WorldClient
                                     (uint)(updateData.ObjectData.EntryID ?? 0),
                                     updateData.GameObjectData?.TypeID);
                                 var rot = updateData.CreateData?.MoveInfo?.Rotation;
-                                Log.Print(LogType.Trace,
-                                    $"Forwarding CreateObject1 for {legacyHigh} guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"} typeID={updateData.GameObjectData?.TypeID?.ToString() ?? "null"} state={updateData.GameObjectData?.State?.ToString() ?? "null"} rot=({rot?.X.ToString("F3") ?? "?"},{rot?.Y.ToString("F3") ?? "?"},{rot?.Z.ToString("F3") ?? "?"},{rot?.W.ToString("F3") ?? "?"}).");
+                                UpdateHandlerLogMessages.GameObjectCreate(_melUpdateValues, "CreateObject1",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID,
+                                    updateData.GameObjectData?.TypeID, updateData.GameObjectData?.State,
+                                    rot?.X, rot?.Y, rot?.Z, rot?.W);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.ItemContainer)
                             {
-                                Log.Print(LogType.Trace,
-                                    $"[ItemContainerTrace] Forwarding CreateObject1 for 0x4700 ItemContainer guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.ItemContainerCreate(_melUpdateValues, "CreateObject1",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                         }
 
@@ -603,7 +607,7 @@ public partial class WorldClient
                         if (updateData.ObjectData.EntryID != null &&
                             !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
                         {
-                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                            (missingItemTemplates ??= []).Add((uint)updateData.ObjectData.EntryID);
                         }
                     }
 
@@ -620,8 +624,9 @@ public partial class WorldClient
                                 filtered = !MayForwardTransport(legacyHigh, updateData);
                                 if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
                                     RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
-                                Log.Print(LogType.Trace,
-                                    $"{(filtered ? "Skipping" : "Forwarding")} CreateObject2 for {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.TransportCreate(_melUpdateValues,
+                                    filtered ? "Skipping" : "Forwarding", "CreateObject2", legacyHigh,
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -629,13 +634,15 @@ public partial class WorldClient
                                     (uint)(updateData.ObjectData.EntryID ?? 0),
                                     updateData.GameObjectData?.TypeID);
                                 var rot = updateData.CreateData?.MoveInfo?.Rotation;
-                                Log.Print(LogType.Trace,
-                                    $"Forwarding CreateObject2 for {legacyHigh} guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"} typeID={updateData.GameObjectData?.TypeID?.ToString() ?? "null"} state={updateData.GameObjectData?.State?.ToString() ?? "null"} rot=({rot?.X.ToString("F3") ?? "?"},{rot?.Y.ToString("F3") ?? "?"},{rot?.Z.ToString("F3") ?? "?"},{rot?.W.ToString("F3") ?? "?"}).");
+                                UpdateHandlerLogMessages.GameObjectCreate(_melUpdateValues, "CreateObject2",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID,
+                                    updateData.GameObjectData?.TypeID, updateData.GameObjectData?.State,
+                                    rot?.X, rot?.Y, rot?.Z, rot?.W);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.ItemContainer)
                             {
-                                Log.Print(LogType.Trace,
-                                    $"[ItemContainerTrace] Forwarding CreateObject2 for 0x4700 ItemContainer guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.ItemContainerCreate(_melUpdateValues, "CreateObject2",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                         }
 
@@ -683,13 +690,16 @@ public partial class WorldClient
             CollectionSync.RefreshUsableToys(GetSession());
         }
 
-        foreach (uint itemId in missingItemTemplates)
+        if (missingItemTemplates != null)
         {
-            WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
-            packet2.WriteUInt32(itemId);
-            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
-                packet2.WriteGuid(WowGuid64.Empty);
-            SendPacketToServer(packet2);
+            foreach (uint itemId in missingItemTemplates)
+            {
+                WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
+                packet2.WriteUInt32(itemId);
+                if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+                    packet2.WriteGuid(WowGuid64.Empty);
+                SendPacketToServer(packet2);
+            }
         }
 
         int activePlayerUpdateIndex = -1;
@@ -788,7 +798,7 @@ public partial class WorldClient
         HashSet<uint>? deferredFor = null;
         if (activePlayerUpdateIndex >= 0)
         {
-            if (missingItemTemplates.Count > 0)
+            if (missingItemTemplates != null)
             {
                 deferredFor = new HashSet<uint>(missingItemTemplates);
             }
@@ -815,7 +825,7 @@ public partial class WorldClient
             // were dispatched by the loop above.
             foreach (uint itemId in deferredFor)
             {
-                if (missingItemTemplates.Contains(itemId))
+                if (missingItemTemplates?.Contains(itemId) == true)
                     continue;
                 WorldPacket reqPacket = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
                 reqPacket.WriteUInt32(itemId);
@@ -1128,7 +1138,7 @@ public partial class WorldClient
         }
     }
 
-    public void ReadNearObjectsBlock(WorldPacket packet, object index)
+    public void ReadNearObjectsBlock(WorldPacket packet, int index)
     {
         var objCount = packet.ReadInt32();
         PrintString($"NearObjectsCount = {objCount}", index);
@@ -1139,7 +1149,7 @@ public partial class WorldClient
         }
     }
 
-    public void ReadFarObjectsBlock(WorldPacket packet, UpdateObject updateObject, object index)
+    public void ReadFarObjectsBlock(WorldPacket packet, UpdateObject updateObject, int index)
     {
         var objCount = packet.ReadInt32();
         PrintString($"FarObjectsCount = {objCount}", index);
@@ -1218,7 +1228,7 @@ public partial class WorldClient
         return false;
     }
 
-    private void ReadCreateObjectBlock(WorldPacket packet, ref WowGuid128 guid, ObjectUpdate updateData, AuraUpdate auraUpdate, object index)
+    private void ReadCreateObjectBlock(WorldPacket packet, ref WowGuid128 guid, ObjectUpdate updateData, AuraUpdate auraUpdate, int index)
     {
         updateData.CreateData.ObjectType = ObjectTypeConverter.Convert((ObjectTypeLegacy)packet.ReadUInt8());
         GetSession().GameState.StoreOriginalObjectType(guid, updateData.CreateData.ObjectType);
@@ -1226,7 +1236,7 @@ public partial class WorldClient
         ReadValuesUpdateBlockOnCreate(packet, ref guid, updateData.CreateData.ObjectType, updateData, auraUpdate, index);
     }
 
-    public void ReadValuesUpdateBlockOnCreate(WorldPacket packet, ref WowGuid128 guid, ObjectType type, ObjectUpdate updateData, AuraUpdate auraUpdate, object index)
+    public void ReadValuesUpdateBlockOnCreate(WorldPacket packet, ref WowGuid128 guid, ObjectType type, ObjectUpdate updateData, AuraUpdate auraUpdate, int index)
     {
         BitArray? updateMaskArray = null;
         var updates = ReadValuesUpdateBlock(packet, ref type, index, true, null, out updateMaskArray, out var actuallyChangedValuesMaskArray);
@@ -1321,7 +1331,7 @@ public partial class WorldClient
 #endif
     }
 
-    private Dictionary<int, UpdateField> ReadValuesUpdateBlock(WorldPacket packet, ref ObjectType type, object index, bool isCreating, Dictionary<int, UpdateField>? oldValues, out BitArray outUpdateMaskArray, out BitArray outActuallyChangedValuesMaskArray)
+    private Dictionary<int, UpdateField> ReadValuesUpdateBlock(WorldPacket packet, ref ObjectType type, int index, bool isCreating, Dictionary<int, UpdateField>? oldValues, out BitArray outUpdateMaskArray, out BitArray outActuallyChangedValuesMaskArray)
     {
         bool missingCreateObject = !isCreating && oldValues == null;
         var maskSize = packet.ReadUInt8();
@@ -1705,12 +1715,12 @@ public partial class WorldClient
     }
 
     // Overload for WowGuid64 - converts to WowGuid128
-    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid64 guid, ObjectUpdate? updateData, object index)
+    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid64 guid, ObjectUpdate? updateData, int index)
     {
         ReadMovementUpdateBlock(packet, guid.To128(GetSession().GameState), updateData, index);
     }
 
-    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid128 guid, ObjectUpdate? updateData, object index)
+    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid128 guid, ObjectUpdate? updateData, int index)
     {
         MovementInfo? moveInfo = null;
 
@@ -4807,10 +4817,9 @@ public partial class WorldClient
                 uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsLegacy, GameObjectDynamicFlagsModern>();
                 uint preservedHigh = isTransport ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
                 updateData.ObjectData.DynamicFlags = (oldValue | preservedHigh | newLow);
-                Log.Print(LogType.Trace,
-                    $"[Trace][GO DYN_FLAGS] guid={guid} entry={updateData.ObjectData.EntryID} " +
-                    $"legacyRaw=0x{legacyRaw:X8} effective=0x{effectiveLegacyRaw:X8} ({flags}) " +
-                    $"-> modernLow=0x{newLow:X8} high=0x{preservedHigh:X8}, oldDyn=0x{oldValue:X8} oldDynSource={oldDynSource}, finalDyn=0x{updateData.ObjectData.DynamicFlags.Value:X8}");
+                UpdateHandlerLogMessages.GameObjectDynamicFlags(_melUpdateValues, guid.Low, guid.High,
+                    updateData.ObjectData.EntryID, legacyRaw, effectiveLegacyRaw, flags, newLow, preservedHigh,
+                    oldValue, oldDynSource, updateData.ObjectData.DynamicFlags.Value);
             }
             int GAMEOBJECT_FACTION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_FACTION);
             if (GAMEOBJECT_FACTION >= 0 && updateMaskArray[GAMEOBJECT_FACTION])

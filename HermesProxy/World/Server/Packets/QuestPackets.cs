@@ -22,6 +22,7 @@ using Framework.IO;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using System;
 using System.Collections.Generic;
@@ -444,9 +445,8 @@ public class QuestGiverStatusPkt : ServerPacket, ISpanWritable
         uint encoded = useV343
             ? QuestGiverStatusV343Converter.FromModern(QuestGiver.Status)
             : (uint)QuestGiver.Status;
-        Log.Print(LogType.Trace,
-            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS write: GUID={QuestGiver.Guid} entry={QuestGiver.Guid.GetEntry()} " +
-            $"modern={QuestGiver.Status} (0x{encoded:X}) build={ModernVersion.Build}");
+        QuestLogMessages.QuestGiverStatusWrite(_melQuest, "", QuestGiver.Guid.Low, QuestGiver.Guid.High,
+            QuestGiver.Guid.GetEntry(), QuestGiver.Status, encoded, ModernVersion.Build);
         _worldPacket.WritePackedGuid128(QuestGiver.Guid);
         // V3_4_3 (8.0+ engine) widened the status field to uint64 — see CypherCore
         // QuestPackets.cs:55. Older clients still use uint32.
@@ -465,9 +465,8 @@ public class QuestGiverStatusPkt : ServerPacket, ISpanWritable
         uint encoded = useV343
             ? QuestGiverStatusV343Converter.FromModern(QuestGiver.Status)
             : (uint)QuestGiver.Status;
-        Log.Print(LogType.Trace,
-            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS write(span): GUID={QuestGiver.Guid} entry={QuestGiver.Guid.GetEntry()} " +
-            $"modern={QuestGiver.Status} (0x{encoded:X}) build={ModernVersion.Build}");
+        QuestLogMessages.QuestGiverStatusWrite(_melQuest, "(span)", QuestGiver.Guid.Low, QuestGiver.Guid.High,
+            QuestGiver.Guid.GetEntry(), QuestGiver.Status, encoded, ModernVersion.Build);
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(QuestGiver.Guid.Low, QuestGiver.Guid.High);
         if (useV343)
@@ -478,6 +477,8 @@ public class QuestGiverStatusPkt : ServerPacket, ISpanWritable
     }
 
     public QuestGiverInfo QuestGiver;
+
+    private static readonly Microsoft.Extensions.Logging.ILogger _melQuest = Log.CreateMelLogger(Log.CategoryServer);
 }
 
 public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
@@ -487,8 +488,7 @@ public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
     public override void Write()
     {
         bool useV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
-        Log.Print(LogType.Trace,
-            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS_MULTIPLE write: count={QuestGivers.Count} build={ModernVersion.Build}");
+        QuestLogMessages.QuestGiverStatusMultipleWrite(_melQuest, "", QuestGivers.Count, ModernVersion.Build);
         _worldPacket.WriteInt32(QuestGivers.Count);
         for (int i = 0; i < QuestGivers.Count; i++)
         {
@@ -496,9 +496,8 @@ public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
             uint encoded = useV343
                 ? QuestGiverStatusV343Converter.FromModern(questGiver.Status)
                 : (uint)questGiver.Status;
-            Log.Print(LogType.Trace,
-                $"[QuestStatusTrace]   [{i}] GUID={questGiver.Guid} entry={questGiver.Guid.GetEntry()} " +
-                $"modern={questGiver.Status} (0x{encoded:X})");
+            QuestLogMessages.QuestGiverStatusMultipleEntry(_melQuest, "", i, questGiver.Guid.Low, questGiver.Guid.High,
+                questGiver.Guid.GetEntry(), questGiver.Status, encoded);
             _worldPacket.WritePackedGuid128(questGiver.Guid);
             // V3_4_3 widened status to uint64 — CypherCore QuestPackets.cs:71.
             if (useV343)
@@ -519,8 +518,7 @@ public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
             return -1;
 
         bool useV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
-        Log.Print(LogType.Trace,
-            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS_MULTIPLE write(span): count={QuestGivers.Count} build={ModernVersion.Build}");
+        QuestLogMessages.QuestGiverStatusMultipleWrite(_melQuest, "(span)", QuestGivers.Count, ModernVersion.Build);
         var writer = new SpanPacketWriter(buffer);
         writer.WriteInt32(QuestGivers.Count);
         for (int i = 0; i < QuestGivers.Count; i++)
@@ -529,9 +527,8 @@ public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
             uint encoded = useV343
                 ? QuestGiverStatusV343Converter.FromModern(questGiver.Status)
                 : (uint)questGiver.Status;
-            Log.Print(LogType.Trace,
-                $"[QuestStatusTrace]   (span)[{i}] GUID={questGiver.Guid} entry={questGiver.Guid.GetEntry()} " +
-                $"modern={questGiver.Status} (0x{encoded:X})");
+            QuestLogMessages.QuestGiverStatusMultipleEntry(_melQuest, "(span)", i, questGiver.Guid.Low, questGiver.Guid.High,
+                questGiver.Guid.GetEntry(), questGiver.Status, encoded);
             writer.WritePackedGuid128(questGiver.Guid.Low, questGiver.Guid.High);
             if (useV343)
                 writer.WriteUInt64(encoded);
@@ -542,6 +539,8 @@ public class QuestGiverStatusMultiple : ServerPacket, ISpanWritable
     }
 
     public List<QuestGiverInfo> QuestGivers = new();
+
+    private static readonly Microsoft.Extensions.Logging.ILogger _melQuest = Log.CreateMelLogger(Log.CategoryServer);
 }
 
 public class QuestGiverInfo
