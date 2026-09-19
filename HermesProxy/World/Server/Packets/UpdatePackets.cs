@@ -75,7 +75,10 @@ public class ObjectUpdate
             case ObjectType.Player:
             case ObjectType.ActivePlayer:
                 UnitData = new UnitData();
-                PlayerData = new PlayerData();
+                // PlayerData is not allocated here either. A 3.3.5a core puts a player-section field
+                // in under 2% of a player's Values blocks (AV sniff, 2026-09-19: 966 of 54,288), and
+                // the rest are health, power and target, so nearly every allocation was discarded
+                // unused. EnsurePlayerData() materialises it on the first player field written.
                 // ActivePlayerData is deliberately not allocated here. It is owner-only data
                 // (~32 KB of nullable arrays, QuestCompleted[875] alone being 14 KB), and a
                 // 3.3.5a core never sends owner-only fields for a foreign player, so every
@@ -109,6 +112,13 @@ public class ObjectUpdate
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ContainerData EnsureContainerData() => ContainerData ??= new ContainerData();
 
+    /// <summary>
+    /// Materialises <see cref="PlayerData"/> on demand. Call this from every write site; read
+    /// sites keep using the field, where null means no player field was sent.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PlayerData EnsurePlayerData() => PlayerData ??= new PlayerData();
+
     public UpdateTypeModern Type;
     public WowGuid128 Guid;
     public GlobalSessionData GlobalSession;
@@ -117,7 +127,7 @@ public class ObjectUpdate
     public ItemData ItemData = null!;
     public ContainerData? ContainerData;
     public UnitData UnitData = null!;
-    public PlayerData PlayerData = null!;
+    public PlayerData? PlayerData;
     public ActivePlayerData? ActivePlayerData;
     public GameObjectData GameObjectData = null!;
     /// <summary>
@@ -526,6 +536,10 @@ public class ObjectUpdate
                 Guid == GlobalSession.GameState.CurrentPlayerGuid)
                 UnitData.ChannelObject = WowGuid128.Empty;
         }
+        // A player create always carries these defaults. PlayerData is lazy, so a create whose
+        // player section happened to be empty would otherwise skip them.
+        if (Guid.GetObjectType() is ObjectType.Player or ObjectType.ActivePlayer)
+            EnsurePlayerData();
         if (PlayerData != null)
         {
             if (PlayerData.WowAccount == null)
@@ -716,13 +730,15 @@ public class UpdateObject : ServerPacket
         {
             var unit = u.UnitData;
             if (unit == null) continue;
-            Reseat(ref unit.Summon,        gs, ref fixedCount, u.Guid, "Summon");
-            Reseat(ref unit.SummonedBy,    gs, ref fixedCount, u.Guid, "SummonedBy");
-            Reseat(ref unit.Charm,         gs, ref fixedCount, u.Guid, "Charm");
-            Reseat(ref unit.CharmedBy,     gs, ref fixedCount, u.Guid, "CharmedBy");
-            Reseat(ref unit.CreatedBy,     gs, ref fixedCount, u.Guid, "CreatedBy");
-            Reseat(ref unit.Target,        gs, ref fixedCount, u.Guid, "Target");
-            Reseat(ref unit.ChannelObject, gs, ref fixedCount, u.Guid, "ChannelObject");
+            // By value rather than by ref: most of these are UnitData properties backed by its
+            // rarely-used half, which a ref cannot reach.
+            unit.Summon        = Reseat(unit.Summon,        gs, ref fixedCount, u.Guid, "Summon");
+            unit.SummonedBy    = Reseat(unit.SummonedBy,    gs, ref fixedCount, u.Guid, "SummonedBy");
+            unit.Charm         = Reseat(unit.Charm,         gs, ref fixedCount, u.Guid, "Charm");
+            unit.CharmedBy     = Reseat(unit.CharmedBy,     gs, ref fixedCount, u.Guid, "CharmedBy");
+            unit.CreatedBy     = Reseat(unit.CreatedBy,     gs, ref fixedCount, u.Guid, "CreatedBy");
+            unit.Target        = Reseat(unit.Target,        gs, ref fixedCount, u.Guid, "Target");
+            unit.ChannelObject = Reseat(unit.ChannelObject, gs, ref fixedCount, u.Guid, "ChannelObject");
         }
         if (fixedCount > 0)
         {
@@ -731,17 +747,16 @@ public class UpdateObject : ServerPacket
         }
     }
 
-    private static void Reseat(ref WowGuid128? field, GameSessionData gs, ref int fixedCount, WowGuid128 ownerGuid, string fieldName)
+    private static WowGuid128? Reseat(WowGuid128? field, GameSessionData gs, ref int fixedCount, WowGuid128 ownerGuid, string fieldName)
     {
-        if (!field.HasValue) return;
+        if (!field.HasValue) return field;
         var corrected = gs.ResolveStalePetGuid(field.Value);
-        if (corrected.HasValue)
-        {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[ReseatStalePetGuids] owner={ownerGuid} field={fieldName} stale={field.Value} -> {corrected.Value}");
-            field = corrected.Value;
-            fixedCount++;
-        }
+        if (!corrected.HasValue) return field;
+
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[ReseatStalePetGuids] owner={ownerGuid} field={fieldName} stale={field.Value} -> {corrected.Value}");
+        fixedCount++;
+        return corrected.Value;
     }
 
     public override void Write()

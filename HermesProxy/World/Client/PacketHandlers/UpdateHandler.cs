@@ -2915,7 +2915,7 @@ public partial class WorldClient
                     // Pre-WotLK carries no arena team on the wire, so fall back to race.
                     // From WotLK on it comes from PLAYER_BYTES_3 byte 3 and guessing here
                     // would overwrite the real value with "everyone is on my team".
-                    updateData.PlayerData.ArenaFaction = (byte)(GameData.IsAllianceRace((Race)updateData.UnitData.RaceId) ? 1 : 0);
+                    updateData.EnsurePlayerData().ArenaFaction = (byte)(GameData.IsAllianceRace((Race)updateData.UnitData.RaceId) ? 1 : 0);
                 }
 
                 if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
@@ -3466,7 +3466,7 @@ public partial class WorldClient
             int PLAYER_DUEL_ARBITER = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DUEL_ARBITER);
             if (PLAYER_DUEL_ARBITER >= 0 && updateMaskArray[PLAYER_DUEL_ARBITER])
             {
-                updateData.PlayerData.DuelArbiter = GetGuidValue(updates, PlayerField.PLAYER_DUEL_ARBITER).To128(GetSession().GameState);
+                updateData.EnsurePlayerData().DuelArbiter = GetGuidValue(updates, PlayerField.PLAYER_DUEL_ARBITER).To128(GetSession().GameState);
             }
             int PLAYER_FLAGS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FLAGS);
             if (PLAYER_FLAGS >= 0 && updateMaskArray[PLAYER_FLAGS])
@@ -3475,14 +3475,14 @@ public partial class WorldClient
                 var flags = legacyFlags.CastFlags<PlayerFlagsLegacy, PlayerFlags>();
                 if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
                     GetSession().GameState.CurrentPlayerStorage.Settings.PatchFlags(ref flags); // Some patches like auto guild inv decline
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.EnsurePlayerData().PlayerFlags = (uint) flags;
 
-                if (updateData.PlayerData.PlayerFlagsEx == null)
-                    updateData.PlayerData.PlayerFlagsEx = 0;
+                if (updateData.EnsurePlayerData().PlayerFlagsEx == null)
+                    updateData.EnsurePlayerData().PlayerFlagsEx = 0;
                 if (legacyFlags.HasAnyFlag(PlayerFlagsLegacy.HideHelm))
-                    updateData.PlayerData.PlayerFlagsEx |= (uint)PlayerFlagsEx.HideHelm;
+                    updateData.EnsurePlayerData().PlayerFlagsEx |= (uint)PlayerFlagsEx.HideHelm;
                 if (legacyFlags.HasAnyFlag(PlayerFlagsLegacy.HideCloak))
-                    updateData.PlayerData.PlayerFlagsEx |= (uint)PlayerFlagsEx.HideCloak;
+                    updateData.EnsurePlayerData().PlayerFlagsEx |= (uint)PlayerFlagsEx.HideCloak;
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     updateData.UnitData.PvpFlags == null)
@@ -3491,7 +3491,7 @@ public partial class WorldClient
             else if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid && (GetSession().GameState.CurrentPlayerStorage.Settings?.NeedToForcePatchFlags ?? false))
             { // If we did not patch the PlayerFlags the first time, we need to force include the field
                 PlayerFlags flags = GetSession().GameState.CurrentPlayerStorage.Settings.CreateNewFlags();
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.EnsurePlayerData().PlayerFlags = (uint) flags;
             }
 
             if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
@@ -3506,13 +3506,13 @@ public partial class WorldClient
             int PLAYER_GUILDRANK = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILDRANK);
             if (PLAYER_GUILDRANK >= 0 && updateMaskArray[PLAYER_GUILDRANK])
             {
-                updateData.PlayerData.GuildLevel = 25;
-                updateData.PlayerData.GuildRankID = updates[PLAYER_GUILDRANK].UInt32Value;
+                updateData.EnsurePlayerData().GuildLevel = 25;
+                updateData.EnsurePlayerData().GuildRankID = updates[PLAYER_GUILDRANK].UInt32Value;
             }
             int PLAYER_GUILD_TIMESTAMP = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILD_TIMESTAMP);
             if (PLAYER_GUILD_TIMESTAMP >= 0 && updateMaskArray[PLAYER_GUILD_TIMESTAMP])
             {
-                updateData.PlayerData.GuildTimeStamp = updates[PLAYER_GUILD_TIMESTAMP].Int32Value;
+                updateData.EnsurePlayerData().GuildTimeStamp = updates[PLAYER_GUILD_TIMESTAMP].Int32Value;
             }
             int PLAYER_QUEST_LOG_1_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_QUEST_LOG_1_1);
             if (PLAYER_QUEST_LOG_1_1 >= 0)
@@ -3531,13 +3531,13 @@ public partial class WorldClient
                     // for every player update in view, quest fields or not.
                     QuestLog? entry = ReadQuestLogEntry(i, updateMaskArray, updates);
                     if (entry != null)
-                        updateData.PlayerData.EnsureQuestLog()[i] = entry;
+                        updateData.EnsurePlayerData().EnsureQuestLog()[i] = entry;
                 }
             }
             int PLAYER_CHOSEN_TITLE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHOSEN_TITLE);
             if (PLAYER_CHOSEN_TITLE >= 0 && updateMaskArray[PLAYER_CHOSEN_TITLE])
             {
-                updateData.PlayerData.ChosenTitle = updates[PLAYER_CHOSEN_TITLE].Int32Value;
+                updateData.EnsurePlayerData().ChosenTitle = updates[PLAYER_CHOSEN_TITLE].Int32Value;
             }
             int PLAYER_VISIBLE_ITEM_1_0 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_VISIBLE_ITEM_1_0);
             if (PLAYER_VISIBLE_ITEM_1_0 >= 0) // vanilla and tbc
@@ -3557,7 +3557,7 @@ public partial class WorldClient
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[tempEnchantIndex].UInt32Value);
                         if (itemVisual == 0 && updates.ContainsKey(permEnchantIndex))
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[permEnchantIndex].UInt32Value);
-                        updateData.PlayerData.EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
+                        updateData.EnsurePlayerData().EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
                     }
                 }
             }
@@ -3578,7 +3578,7 @@ public partial class WorldClient
                         ushort itemVisual = updates.ContainsKey(enchantIndex)
                             ? (ushort)GameData.GetItemEnchantVisual(updates[enchantIndex].UInt32Value)
                             : (ushort)0;
-                        updateData.PlayerData.EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
+                        updateData.EnsurePlayerData().EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
                     }
                 }
             }
@@ -3689,7 +3689,7 @@ public partial class WorldClient
             if (PLAYER_BYTES_2 >= 0 && updateMaskArray[PLAYER_BYTES_2])
             {
                 facialHair = (byte)(updates[PLAYER_BYTES_2].UInt32Value & 0xFF);
-                updateData.PlayerData.NumBankSlots = (byte)((updates[PLAYER_BYTES_2].UInt32Value >> 16) & 0xFF);
+                updateData.EnsurePlayerData().NumBankSlots = (byte)((updates[PLAYER_BYTES_2].UInt32Value >> 16) & 0xFF);
 
                 if (restInfo == null && guid == GetSession().GameState.CurrentPlayerGuid)
                     restInfo = new RestInfo();
@@ -3745,13 +3745,13 @@ public partial class WorldClient
                     var customizations = CharacterCustomizations.ConvertLegacyCustomizationsToModern(raceId, sexId, (byte)skin, (byte)face, (byte)hairStyle, (byte)hairColor, (byte)facialHair);
                     for (int i = 0; i < 5; i++)
                     {
-                        updateData.PlayerData.EnsureCustomizations()[i] = customizations[i];
+                        updateData.EnsurePlayerData().EnsureCustomizations()[i] = customizations[i];
                     }
 
                     // Create writes customizations unconditionally; a Values delta only carries
                     // them when they changed, so flag it here for the dynamic-field writer.
                     if (!isCreate)
-                        updateData.PlayerData.HasCustomizationsUpdate = true;
+                        updateData.EnsurePlayerData().HasCustomizationsUpdate = true;
                 }
             }
 
@@ -3771,9 +3771,9 @@ public partial class WorldClient
             if (PLAYER_BYTES_3 >= 0 && updateMaskArray[PLAYER_BYTES_3])
             {
                 ushort genderAndInebriation = (ushort)(updates[PLAYER_BYTES_3].UInt32Value & 0xFFFF);
-                updateData.PlayerData.NativeSex = (byte)(genderAndInebriation & 0x1);
-                updateData.PlayerData.Inebriation = (byte)(genderAndInebriation & 0xFFFE);
-                updateData.PlayerData.PvpTitle = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 16) & 0xFF); // city protector
+                updateData.EnsurePlayerData().NativeSex = (byte)(genderAndInebriation & 0x1);
+                updateData.EnsurePlayerData().Inebriation = (byte)(genderAndInebriation & 0xFFFE);
+                updateData.EnsurePlayerData().PvpTitle = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 16) & 0xFF); // city protector
                 byte playerBytes3High = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 24) & 0xFF);
                 // Byte 3 changed meaning when PvP ranks were removed. Vanilla/TBC keep the
                 // honor rank there; WotLK reuses it as the arena team (TC
@@ -3781,14 +3781,14 @@ public partial class WorldClient
                 // both corrupts PvPRank and leaves ArenaFaction guessed from race, so every
                 // player in a skirmish renders on the same team.
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
-                    updateData.PlayerData.ArenaFaction = playerBytes3High;
+                    updateData.EnsurePlayerData().ArenaFaction = playerBytes3High;
                 else
-                    updateData.PlayerData.PvPRank = playerBytes3High; // honor rank
+                    updateData.EnsurePlayerData().PvPRank = playerBytes3High; // honor rank
             }
             int PLAYER_DUEL_TEAM = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DUEL_TEAM);
             if (PLAYER_DUEL_TEAM >= 0 && updateMaskArray[PLAYER_DUEL_TEAM])
             {
-                updateData.PlayerData.DuelTeam = updates[PLAYER_DUEL_TEAM].UInt32Value;
+                updateData.EnsurePlayerData().DuelTeam = updates[PLAYER_DUEL_TEAM].UInt32Value;
             }
             int PLAYER_FARSIGHT = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FARSIGHT);
             if (PLAYER_FARSIGHT >= 0 && updateMaskArray[PLAYER_FARSIGHT])
