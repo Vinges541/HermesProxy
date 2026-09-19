@@ -79,7 +79,7 @@ public class Program
             Console.Error.WriteLine($"Fatal startup error: {ex}");
         }
 
-        if (OsSpecific.AreWeInOurOwnConsole())
+        if (OsSpecific.AreWeInOurOwnConsole() && !StopSignalService.Requested)
         {
             // If we would exit immediately the console would close and the user cannot read the error
             // The delay is there if for some reason STDIN is already closed
@@ -138,6 +138,7 @@ public class Program
         builder.Services.AddSingleton<SocketManager<WorldSocket>, WorldSocketManager>();
 
         builder.Services.AddHostedService<ProxyHostedService>();
+        builder.Services.AddHostedService<StopSignalService>();
 
         using var host = builder.Build();
         await host.RunAsync();

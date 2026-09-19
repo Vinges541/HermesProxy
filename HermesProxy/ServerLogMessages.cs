@@ -39,4 +39,8 @@ internal static partial class ServerLogMessages
     [LoggerMessage(EventId = 606, Level = LogLevel.Information, Message = "Loaded {Count} legacy opcodes.")]
     public static partial void LoadedLegacyOpcodes(
         ILogger logger, string SourceFile, string NetDir, int Count);
+
+    [LoggerMessage(EventId = 607, Level = LogLevel.Information, Message = "Stop requested through {EventName}, shutting down.")]
+    public static partial void StopRequested(
+        ILogger logger, string SourceFile, string NetDir, string EventName);
 }
