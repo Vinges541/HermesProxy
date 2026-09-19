@@ -7,6 +7,7 @@ using HermesProxy.World.Objects;
 using HermesProxy.World.Outbox;
 using HermesProxy.World.Server.Packets;
 using System;
+using System.Collections.Frozen;
 
 namespace HermesProxy.World.Client;
 
@@ -356,6 +357,54 @@ public partial class WorldClient
         SendPacketToClient(speed);
     }
 
+    /// <summary>
+    /// The universal opcode each speed packet is re-sent as.
+    /// </summary>
+    /// <remarks>
+    /// The handlers used to work this out per packet by renaming the opcode: an enum ToString,
+    /// two string Replaces and a reflection TryParse, 6.6 MB of strings over an 18-minute Alterac
+    /// Valley for a mapping that never changes. The tables are built once from the same renames,
+    /// and anything outside them still goes through the rename.
+    /// </remarks>
+    internal static class SpeedOpcodes
+    {
+        public static readonly Func<string, string> ForceToSetName =
+            name => name.Replace("SMSG_FORCE_", "SMSG_MOVE_SET_").Replace("_CHANGE", "");
+
+        public static readonly Func<string, string> SetToUpdateName =
+            name => name.Replace("MSG_MOVE_SET", "SMSG_MOVE_UPDATE");
+
+        public static readonly FrozenDictionary<Opcode, Opcode> ForceToSet = Build(ForceToSetName,
+        [
+            Opcode.SMSG_FORCE_WALK_SPEED_CHANGE, Opcode.SMSG_FORCE_RUN_SPEED_CHANGE, Opcode.SMSG_FORCE_RUN_BACK_SPEED_CHANGE,
+            Opcode.SMSG_FORCE_SWIM_SPEED_CHANGE, Opcode.SMSG_FORCE_SWIM_BACK_SPEED_CHANGE, Opcode.SMSG_FORCE_TURN_RATE_CHANGE,
+            Opcode.SMSG_FORCE_FLIGHT_SPEED_CHANGE, Opcode.SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE, Opcode.SMSG_FORCE_PITCH_RATE_CHANGE,
+        ]);
+
+        public static readonly FrozenDictionary<Opcode, Opcode> SetToUpdate = Build(SetToUpdateName,
+        [
+            Opcode.MSG_MOVE_SET_FLIGHT_BACK_SPEED, Opcode.MSG_MOVE_SET_FLIGHT_SPEED, Opcode.MSG_MOVE_SET_PITCH_RATE,
+            Opcode.MSG_MOVE_SET_RUN_BACK_SPEED, Opcode.MSG_MOVE_SET_RUN_SPEED, Opcode.MSG_MOVE_SET_SWIM_BACK_SPEED,
+            Opcode.MSG_MOVE_SET_SWIM_SPEED, Opcode.MSG_MOVE_SET_TURN_RATE, Opcode.MSG_MOVE_SET_WALK_SPEED,
+        ]);
+
+        // Vanilla has no flight speed of its own; the handlers send the swim speed as it too.
+        public static readonly FrozenDictionary<Opcode, Opcode> SwimToFlight = BuildSwimToFlight(
+        [
+            Opcode.SMSG_MOVE_SET_SWIM_SPEED, Opcode.SMSG_MOVE_SET_SWIM_BACK_SPEED,
+            Opcode.SMSG_MOVE_UPDATE_SWIM_SPEED, Opcode.SMSG_MOVE_UPDATE_SWIM_BACK_SPEED,
+        ]);
+
+        private static FrozenDictionary<Opcode, Opcode> BuildSwimToFlight(Opcode[] opcodes) =>
+            opcodes.ToFrozenDictionary(o => o, o => Enum.Parse<Opcode>(o.ToString().Replace("SWIM", "FLIGHT")));
+
+        public static Opcode Renamed(FrozenDictionary<Opcode, Opcode> table, Opcode opcode, Func<string, string> rename) =>
+            table.TryGetValue(opcode, out Opcode renamed) ? renamed : Opcodes.GetUniversalOpcode(rename(opcode.ToString()));
+
+        private static FrozenDictionary<Opcode, Opcode> Build(Func<string, string> rename, Opcode[] opcodes) =>
+            opcodes.ToFrozenDictionary(o => o, o => Opcodes.GetUniversalOpcode(rename(o.ToString())));
+    }
+
     // for own player
     [HandlesSmsg(Opcode.SMSG_FORCE_WALK_SPEED_CHANGE)]
     [HandlesSmsg(Opcode.SMSG_FORCE_RUN_SPEED_CHANGE)]
@@ -368,8 +417,7 @@ public partial class WorldClient
     [HandlesSmsg(Opcode.SMSG_FORCE_PITCH_RATE_CHANGE)]
     internal void HandleMoveForceSpeedChange(WorldPacket packet)
     { // for own player
-        string opcodeName = packet.GetUniversalOpcode(false).ToString().Replace("SMSG_FORCE_", "SMSG_MOVE_SET_").Replace("_CHANGE", "");
-        Opcode universalOpcode = Opcodes.GetUniversalOpcode(opcodeName);
+        Opcode universalOpcode = SpeedOpcodes.Renamed(SpeedOpcodes.ForceToSet, packet.GetUniversalOpcode(false), SpeedOpcodes.ForceToSetName);
 
         MoveSetSpeed speed = new MoveSetSpeed(universalOpcode);
         speed.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
@@ -389,7 +437,7 @@ public partial class WorldClient
                             or Opcode.SMSG_MOVE_SET_SWIM_BACK_SPEED &&
             LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            var flyOpcode = (Opcode) Enum.Parse(typeof(Opcode), universalOpcode.ToString().Replace("SWIM", "FLIGHT"));
+            var flyOpcode = SpeedOpcodes.SwimToFlight[universalOpcode];
             MoveSetSpeed flySpeed = new MoveSetSpeed(flyOpcode);
             flySpeed.MoverGUID = speed.MoverGUID;
             flySpeed.MoveCounter = speed.MoveCounter;
@@ -410,8 +458,7 @@ public partial class WorldClient
     [HandlesSmsg(Opcode.MSG_MOVE_SET_WALK_SPEED)]
     internal void HandleMoveUpdateSpeed(WorldPacket packet)
     { // for other players
-        string opcodeName = packet.GetUniversalOpcode(false).ToString().Replace("MSG_MOVE_SET", "SMSG_MOVE_UPDATE");
-        Opcode universalOpcode = Opcodes.GetUniversalOpcode(opcodeName);
+        Opcode universalOpcode = SpeedOpcodes.Renamed(SpeedOpcodes.SetToUpdate, packet.GetUniversalOpcode(false), SpeedOpcodes.SetToUpdateName);
 
         MoveUpdateSpeed speed = new MoveUpdateSpeed(universalOpcode);
         speed.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
@@ -428,7 +475,7 @@ public partial class WorldClient
                             or Opcode.SMSG_MOVE_UPDATE_SWIM_BACK_SPEED &&
             LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            var flyOpcode = (Opcode) Enum.Parse(typeof(Opcode), universalOpcode.ToString().Replace("SWIM", "FLIGHT"));
+            var flyOpcode = SpeedOpcodes.SwimToFlight[universalOpcode];
             MoveUpdateSpeed flySpeed = new MoveUpdateSpeed(flyOpcode);
             flySpeed.MoverGUID = speed.MoverGUID;
             flySpeed.MoveInfo = speed.MoveInfo;
@@ -626,6 +673,10 @@ public partial class WorldClient
         }
 
         moveSpline.SplineCount = packet.ReadUInt32();
+
+        // One allocation instead of a growth chain. Capped at MonsterMove's own point limit so a
+        // corrupt count cannot ask for a huge array before the reads run out of packet.
+        moveSpline.SplinePoints.EnsureCapacity((int)Math.Min(moveSpline.SplineCount, 4096u));
 
         if (hasCatmullRom)
         {

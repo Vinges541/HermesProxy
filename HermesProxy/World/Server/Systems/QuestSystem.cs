@@ -96,7 +96,7 @@ public static class QuestSystem
                 foreach (var obj in ctx.GetSession().GameState.ObjectCacheModern)
                 {
                     if (obj.Key.GetObjectType() == ObjectType.Unit &&
-                        obj.Value.GetUpdateField<uint>(UNIT_NPC_FLAGS).HasAnyFlag(NPCFlags.QuestGiver))
+                        obj.Value.GetUpdateField<uint>(UNIT_NPC_FLAGS).HasAnyFlag((uint)NPCFlags.QuestGiver))
                         npcGuids.Add(obj.Key);
                 }
             }

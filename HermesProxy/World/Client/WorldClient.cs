@@ -264,7 +264,11 @@ public partial class WorldClient
         }
     }
 
-    private async Task<bool> ReceiveBufferFully(Memory<byte> bufferToFill)
+    // Pooled: the receive loop awaits this three times per legacy packet, and every await that
+    // has to wait for the socket boxed a fresh state machine (18 MB over an 18-minute Alterac
+    // Valley). The result is awaited exactly once, which is all a pooled ValueTask requires.
+    [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<bool> ReceiveBufferFully(Memory<byte> bufferToFill)
     {
         int alreadyReceived = 0;
 

@@ -105,11 +105,11 @@ public partial class WorldClient
             subDmg.IntDamage = packet.ReadInt32();
 
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_3_9183) ||
-                hitInfo.HasAnyFlag(HitInfo.PartialAbsorb | HitInfo.FullAbsorb))
+                hitInfo.HasAnyFlag((uint)(HitInfo.PartialAbsorb | HitInfo.FullAbsorb)))
                 subDmg.Absorbed = packet.ReadInt32();
 
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_3_9183) ||
-                hitInfo.HasAnyFlag(HitInfo.PartialResist | HitInfo.FullResist))
+                hitInfo.HasAnyFlag((uint)(HitInfo.PartialResist | HitInfo.FullResist)))
                 subDmg.Resisted = packet.ReadInt32();
 
             attack.SubDmg.Add(subDmg);
@@ -124,13 +124,13 @@ public partial class WorldClient
         attack.MeleeSpellID = packet.ReadUInt32();
 
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_3_9183) ||
-            hitInfo.HasAnyFlag(HitInfo.Block))
+            hitInfo.HasAnyFlag((uint)HitInfo.Block))
             attack.BlockAmount = packet.ReadInt32();
 
-        if (hitInfo.HasAnyFlag(HitInfo.RageGain))
+        if (hitInfo.HasAnyFlag((uint)HitInfo.RageGain))
             attack.RageGained = packet.ReadInt32();
 
-        if (hitInfo.HasAnyFlag(HitInfo.Unk0))
+        if (hitInfo.HasAnyFlag((uint)HitInfo.Unk0))
         {
             attack.UnkState = new();
             attack.UnkState.State1 = packet.ReadUInt32();

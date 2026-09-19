@@ -24,7 +24,7 @@ public partial class WorldClient
     internal void HandleShowTaxiNodes(WorldPacket packet)
     {
         uint playerFlags = GetSession().GameState.GetLegacyFieldValueUInt32(GetSession().GameState.CurrentPlayerGuid, PlayerField.PLAYER_FLAGS);
-        if (playerFlags.HasAnyFlag(PlayerFlags.GM))
+        if (playerFlags.HasAnyFlag((uint)PlayerFlags.GM))
         {
             ChatPkt chat = new ChatPkt(GetSession(), ChatMessageTypeModern.System, "Disable GM mode before talking to taxi master or your game will freeze.");
             SendPacketToClient(chat);

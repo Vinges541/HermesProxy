@@ -44,10 +44,14 @@ public class ByteBuffer : IDisposable
 
     public ByteBuffer()
     {
-        _buffer = ArrayPool<byte>.Shared.Rent(DefaultWriteCapacity);
+        // No rental until the first write, so a buffer that is never written never holds an array
+        // for the finalizer to hand back. Finalization itself is left registered: suppressing it
+        // here and re-registering on the first write cost two runtime calls on every packet that
+        // does write, and the finalizer is already a no-op without a rental.
+        _buffer = [];
         _position = 0;
         _length = 0;
-        _isPooledBuffer = true;
+        _isPooledBuffer = false;
         _isWriteMode = true;
     }
 
@@ -103,7 +107,7 @@ public class ByteBuffer : IDisposable
         int required = _position + additionalBytes;
         if (required <= _buffer.Length) return;
 
-        int newSize = Math.Max(_buffer.Length * 2, required);
+        int newSize = Math.Max(Math.Max(_buffer.Length * 2, required), DefaultWriteCapacity);
         byte[] newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _length).CopyTo(newBuffer);
 

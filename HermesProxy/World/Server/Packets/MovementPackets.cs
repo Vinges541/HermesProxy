@@ -67,6 +67,9 @@ public class MonsterMove : ServerPacket, ISpanWritable
     {
         if (moveSpline.SplineFlags.HasFlag(SplineFlagModern.UncompressedPath))
         {
+            // Sized up front: growing a list from empty point by point allocated and copied a
+            // chain of arrays per packet, 27 MB over an 18-minute Alterac Valley.
+            Points.EnsureCapacity(moveSpline.SplinePoints.Count + 1);
             if (!moveSpline.SplineFlags.HasFlag(SplineFlagModern.Cyclic))
             {
                 foreach (var point in moveSpline.SplinePoints)
@@ -90,6 +93,7 @@ public class MonsterMove : ServerPacket, ISpanWritable
 
             if (moveSpline.SplinePoints.Count > 0)
             {
+                PackedDeltas.EnsureCapacity(moveSpline.SplinePoints.Count);
                 Vector3 middle = (moveSpline.StartPosition + moveSpline.EndPosition) / 2.0f;
 
                 // first and last points already appended

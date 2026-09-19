@@ -74,4 +74,27 @@ public class UpdateMaskTests
             AssertSame(Reference(words, length), WorldClient.BuildUpdateMask(words, length));
         }
     }
+
+    [Fact]
+    public void FillUpdateMask_ReusedAcrossBlocks_MatchesAFreshMask()
+    {
+        // The handler refills one BitArray per block. Whatever the previous block left behind -
+        // longer, shorter, every bit set - must not leak into the next.
+        var rnd = new Random(54321);
+        var reused = new BitArray(0);
+        for (int iter = 0; iter < 2000; iter++)
+        {
+            if (rnd.Next(5) == 0)
+                reused.SetAll(true);
+
+            int n = rnd.Next(0, 48);
+            var words = new int[n];
+            for (int i = 0; i < n; i++)
+                words[i] = rnd.Next(4) == 0 ? rnd.Next(int.MinValue, int.MaxValue) : 0;
+            int length = rnd.Next(2) == 0 ? n * 32 : n * 32 + rnd.Next(1, 1400);
+
+            WorldClient.FillUpdateMask(reused, words, length);
+            AssertSame(Reference(words, length), reused);
+        }
+    }
 }

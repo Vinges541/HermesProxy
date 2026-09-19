@@ -78,31 +78,29 @@ public abstract class ServerPacket
     {
         connectionType = ConnectionType.Realm;
 
-        uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
+        opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
         if (opcode == 0)
             throw new UnmappedOpcodeException(universalOpcode, isModern: true);
-        _worldPacket = new WorldPacket(opcode);
     }
 
     protected ServerPacket(Opcode universalOpcode, ConnectionType type = ConnectionType.Realm)
     {
         connectionType = type;
 
-        uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
+        opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
         if (opcode == 0)
             throw new UnmappedOpcodeException(universalOpcode, isModern: true);
-        _worldPacket = new WorldPacket(opcode);
     }
 
     public void Clear()
     {
-        _worldPacket.Clear();
+        worldPacket?.Clear();
         buffer = null;
     }
 
     public uint GetOpcode()
     {
-        return _worldPacket.GetOpcode();
+        return worldPacket?.GetOpcode() ?? opcode;
     }
     public Opcode GetUniversalOpcode()
     {
@@ -156,7 +154,7 @@ public abstract class ServerPacket
             {
                 ArrayPool<byte>.Shared.Return(pooledBuffer);
             }
-            _worldPacket.Dispose();
+            worldPacket?.Dispose();
         }
         else
         {
@@ -171,18 +169,30 @@ public abstract class ServerPacket
     /// Releases the pooled buffer of a packet that will never be sent.
     /// </summary>
     /// <remarks>
-    /// The constructor rents through <c>new WorldPacket(opcode)</c>, and it is
-    /// <see cref="WritePacketData"/> that gives that rental back. A packet dropped before it is
-    /// written - the socket closed between construction and send - would otherwise reach the pool
-    /// only through ~ByteBuffer. Safe to call twice; ByteBuffer.Dispose is idempotent.
+    /// The buffer is rented on the first write into <see cref="_worldPacket"/>, and it is
+    /// <see cref="WritePacketData"/> that gives it back. A packet dropped after writing but
+    /// before sending - the socket closed in between - would otherwise reach the pool only through
+    /// ~ByteBuffer. Safe to call twice; ByteBuffer.Dispose is idempotent.
     /// </remarks>
-    public void Discard() => _worldPacket.Dispose();
+    public void Discard() => worldPacket?.Dispose();
 
     public ConnectionType GetConnection() { return connectionType; }
 
     byte[]? buffer;
     ConnectionType connectionType;
-    protected WorldPacket _worldPacket;
+    readonly uint opcode;
+    WorldPacket? worldPacket;
+
+    /// <summary>
+    /// The buffer <see cref="Write"/> serialises into, created on first use.
+    /// </summary>
+    /// <remarks>
+    /// ISpanWritable packets never touch it, and a scratch packet that turns out to have nothing
+    /// to say (the aura and power updates built for every Values block) is never written. Both
+    /// used to carry a WorldPacket from construction to send for nothing. Named like a field so
+    /// the Write() of every packet type reads unchanged.
+    /// </remarks>
+    protected WorldPacket _worldPacket => worldPacket ??= new WorldPacket(opcode);
 }
 
 public class WorldPacket : ByteBuffer
@@ -316,55 +326,19 @@ public class WorldPacket : ByteBuffer
         WritePackedUInt64(guid.Low);
     }
 
+    // Packed on the stack: the previous shape allocated a byte[8] per half of every GUID written,
+    // 28 MB over an 18-minute Alterac Valley. WriteBytes flushes pending bits exactly as the
+    // WriteUInt8 calls it replaces did, so the bytes are unchanged.
     public void WritePackedGuid128(WowGuid128 guid)
     {
-        if (guid.IsEmpty())
-        {
-            WriteUInt8(0);
-            WriteUInt8(0);
-            return;
-        }
-
-        byte lowMask, highMask;
-        byte[] lowPacked, highPacked;
-
-        var loSize = PackUInt64(guid.GetLowValue(), out lowMask, out lowPacked);
-        var hiSize = PackUInt64(guid.GetHighValue(), out highMask, out highPacked);
-
-        WriteUInt8(lowMask);
-        WriteUInt8(highMask);
-        WriteBytes(lowPacked, loSize);
-        WriteBytes(highPacked, hiSize);
+        Span<byte> packed = stackalloc byte[PackedGuidHelper.MaxPackedGuid128Size];
+        WriteBytes(packed[..PackedGuidHelper.WritePackedGuid128(packed, guid.GetLowValue(), guid.GetHighValue())]);
     }
 
     public void WritePackedUInt64(ulong guid)
     {
-        byte mask;
-        byte[] packed;
-        var packedSize = PackUInt64(guid, out mask, out packed);
-
-        WriteUInt8(mask);
-        WriteBytes(packed, packedSize);
-    }
-
-    uint PackUInt64(ulong value, out byte mask, out byte[] result)
-    {
-        uint resultSize = 0;
-        mask = 0;
-        result = new byte[8];
-
-        for (byte i = 0; value != 0; ++i)
-        {
-            if ((value & 0xFF) != 0)
-            {
-                mask |= (byte)(1 << i);
-                result[resultSize++] = (byte)(value & 0xFF);
-            }
-
-            value >>= 8;
-        }
-
-        return resultSize;
+        Span<byte> packed = stackalloc byte[1 + sizeof(ulong)];
+        WriteBytes(packed[..PackedGuidHelper.WritePackedUInt64(packed, guid)]);
     }
 
     public void WriteBytes(WorldPacket data)
@@ -441,7 +415,9 @@ public struct PacketHeader
     public readonly bool IsValidSize() { return (uint)Size < 0x40000; }
 }
 
-public class LegacyServerPacketHeader
+// A struct: the receive loop parses one of these for every legacy packet, and as a class it was a
+// heap object per packet (24 MB over an 18-minute Alterac Valley) for four bytes of header.
+public struct LegacyServerPacketHeader
 {
     // WotLK-era cores (AzerothCore/TrinityCore 3.3.5a ServerPktHeader) size the header
     // by the payload: normally 2 bytes of big-endian size + 2 bytes of opcode, but once

@@ -131,19 +131,51 @@ public static partial class Extensions
         return result;
     }
 
-    /// <summary>
-    /// Returns true if flag exists in value (&)
-    /// </summary>
-    /// <param name="value">An enum, int, ...</param>
-    /// <param name="flag">An enum, int, ...</param>
-    /// <returns>A boolean</returns>
-    public static bool HasAnyFlag(this IConvertible value, IConvertible flag)
-    {
-        var uFlag = flag.ToUInt64(null);
-        var uThis = value.ToUInt64(null);
+    // Returns true if value and flag share any bit.
+    //
+    // Both sides must have the same type. The overload these replaced took IConvertible, which
+    // boxed both arguments and, for an enum, boxed the underlying value again inside ToUInt64:
+    // four allocations per check. The V3_4_3 update writer alone makes nine checks per object,
+    // three times over, which put it at 14% of all proxy allocation. It is gone rather than kept
+    // as a fallback, so a check that mixes types (a uint field against an enum constant) fails to
+    // compile instead of quietly boxing: cast the constant to the field's type.
+    //
+    // One difference from the old overload: ToUInt64 threw OverflowException for a negative
+    // signed value, these compare the bits.
 
-        return (uThis & uFlag) != 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag<T>(this T value, T flag) where T : struct, Enum
+    {
+        // SizeOf is a JIT-time constant, so only one branch survives per enum.
+        if (Unsafe.SizeOf<T>() == sizeof(byte))
+            return (Unsafe.As<T, byte>(ref value) & Unsafe.As<T, byte>(ref flag)) != 0;
+        if (Unsafe.SizeOf<T>() == sizeof(ushort))
+            return (Unsafe.As<T, ushort>(ref value) & Unsafe.As<T, ushort>(ref flag)) != 0;
+        if (Unsafe.SizeOf<T>() == sizeof(uint))
+            return (Unsafe.As<T, uint>(ref value) & Unsafe.As<T, uint>(ref flag)) != 0;
+        return (Unsafe.As<T, ulong>(ref value) & Unsafe.As<T, ulong>(ref flag)) != 0;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this byte value, byte flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this ushort value, ushort flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this short value, short flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this uint value, uint flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this int value, int flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this ulong value, ulong flag) => (value & flag) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag(this long value, long flag) => (value & flag) != 0;
 
     public static string ToHexString(this byte[] byteArray, bool reverse = false)
     {

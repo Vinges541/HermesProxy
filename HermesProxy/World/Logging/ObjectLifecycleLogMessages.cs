@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using HermesProxy.World.Enums;
+using Microsoft.Extensions.Logging;
 
 namespace HermesProxy.World.Logging;
 
@@ -24,7 +25,7 @@ internal static partial class ObjectLifecycleLogMessages
         Level = LogLevel.Trace,
         Message = "[ObjLife] create registered guidLow={GuidLow} guidHigh={GuidHigh} updateType={UpdateType}")]
     public static partial void CreateRegistered(
-        ILogger logger, ulong guidLow, ulong guidHigh, string updateType);
+        ILogger logger, ulong guidLow, ulong guidHigh, UpdateTypeModern updateType);
 
     [LoggerMessage(
         EventId = 901,
@@ -102,4 +103,11 @@ internal static partial class ObjectLifecycleLogMessages
         Message = "[ObjLife] sent while client has no pet object opcode={Opcode} petLow={PetLow} sinceSummonMs={SinceSummonMs}")]
     public static partial void SentWhileClientHasNoPet(
         ILogger logger, string opcode, ulong petLow, long sinceSummonMs);
+
+    [LoggerMessage(
+        EventId = 912,
+        Level = LogLevel.Trace,
+        Message = "[UpdateObjectTrace] V3_4_3 filter: in={In} valuesKept={ValuesKept} valuesEmpty={ValuesEmpty} valuesUnknown={ValuesUnknown} createKept={CreateKept} mapId={MapId}")]
+    public static partial void ValuesFilterSummary(
+        ILogger logger, int @in, int valuesKept, int valuesEmpty, int valuesUnknown, int createKept, uint? mapId);
 }

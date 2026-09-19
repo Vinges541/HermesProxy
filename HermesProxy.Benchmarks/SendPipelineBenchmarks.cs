@@ -17,7 +17,7 @@ namespace HermesProxy.Benchmarks;
 // (all three packets here are far below it).
 //
 // Three stages per packet so the cost can be attributed:
-//   *_Construct       ctor only — every ServerPacket rents a 256-byte ByteBuffer it may never use
+//   *_Construct       ctor only — nothing is rented until the first write (it used to be 256 B up front)
 //   *_WritePacketData ctor + serialise — ISpanWritable packets still copy into a fresh byte[]
 //   *_Wire            ctor + serialise + opcode framing + AES-GCM + 16-byte header, as sent
 // *_SpanOnly is the floor: WriteToSpan straight into a caller-owned buffer, nothing else.

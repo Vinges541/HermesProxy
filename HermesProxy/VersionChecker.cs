@@ -17,6 +17,33 @@ using System.Threading.Tasks;
 
 namespace HermesProxy;
 
+/// <summary>
+/// Maps a universal update-field enum value to one build's field index.
+/// </summary>
+/// <remarks>
+/// <c>GetUpdateField</c> used to run <c>field.ToString()</c> on every call, which boxes the enum,
+/// allocates its name and hashes that string. The update handler makes the call for every field it
+/// checks on every object, whether or not the field changed: 21% of all proxy allocation in a
+/// 54-player Alterac Valley. The map is keyed by the enum value but filled through the same
+/// <c>ToString()</c>, so an aliased or undefined value resolves exactly as it did.
+/// </remarks>
+internal static class UpdateFieldLookup
+{
+    internal static FrozenDictionary<T, int> Build<T>(Dictionary<string, int>? namesToValues) where T : System.Enum
+    {
+        if (namesToValues == null)
+            return FrozenDictionary<T, int>.Empty;
+
+        var byValue = new Dictionary<T, int>();
+        foreach (T value in Enum.GetValues(typeof(T)))
+        {
+            if (!byValue.ContainsKey(value) && namesToValues.TryGetValue(value.ToString(), out int field))
+                byValue[value] = field;
+        }
+        return byValue.ToFrozenDictionary();
+    }
+}
+
 // VersionBootstrap — the one-line mutable handoff point for ModernVersion / LegacyVersion.
 // Assigned exactly once at Host startup (ProxyHostedService.ExecuteAsync), and by the
 // test-assembly [ModuleInitializer] / benchmark GlobalSetup before any code touches the
@@ -294,6 +321,7 @@ public static class LegacyVersion
         public static readonly int[] Keys;
         public static readonly UpdateFieldInfo[] Infos;
         public static readonly Dictionary<string, int>? NamesToValues;
+        public static readonly FrozenDictionary<T, int> FieldsByValue;
 
         static UpdateFields()
         {
@@ -311,16 +339,13 @@ public static class LegacyVersion
                 Infos = Array.Empty<UpdateFieldInfo>();
                 NamesToValues = null;
             }
+            FieldsByValue = UpdateFieldLookup.Build<T>(NamesToValues);
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetUpdateField<T>(T field) where T: System.Enum // C# 7.3
-    {
-        var names = UpdateFields<T>.NamesToValues;
-        if (names != null && names.TryGetValue(field.ToString(), out int fieldValue))
-            return fieldValue;
-        return -1;
-    }
+        => UpdateFields<T>.FieldsByValue.TryGetValue(field, out int fieldValue) ? fieldValue : -1;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string GetUpdateFieldName<T>(int field) where T: System.Enum // C# 7.3
@@ -636,6 +661,7 @@ public static class ModernVersion
         public static readonly int[] Keys;
         public static readonly UpdateFieldInfo[] Infos;
         public static readonly Dictionary<string, int>? NamesToValues;
+        public static readonly FrozenDictionary<T, int> FieldsByValue;
 
         static UpdateFields()
         {
@@ -653,16 +679,13 @@ public static class ModernVersion
                 Infos = Array.Empty<UpdateFieldInfo>();
                 NamesToValues = null;
             }
+            FieldsByValue = UpdateFieldLookup.Build<T>(NamesToValues);
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetUpdateField<T>(T field) where T: System.Enum // C# 7.3
-    {
-        var names = UpdateFields<T>.NamesToValues;
-        if (names != null && names.TryGetValue(field.ToString(), out int fieldValue))
-            return fieldValue;
-        return -1;
-    }
+        => UpdateFields<T>.FieldsByValue.TryGetValue(field, out int fieldValue) ? fieldValue : -1;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string GetUpdateFieldName<T>(int field) where T: System.Enum // C# 7.3
@@ -1019,14 +1042,14 @@ public static class ModernVersion
             else
                 newFlags |= AuraFlagsModern.Positive;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsVanilla.Cancelable))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsVanilla.Cancelable))
                 newFlags |= AuraFlagsModern.Cancelable;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsVanilla.EffectIndex0))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsVanilla.EffectIndex0))
                 activeFlags |= 1;
-            if (oldFlags.HasAnyFlag(AuraFlagsVanilla.EffectIndex1))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsVanilla.EffectIndex1))
                 activeFlags |= 2;
-            if (oldFlags.HasAnyFlag(AuraFlagsVanilla.EffectIndex2))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsVanilla.EffectIndex2))
                 activeFlags |= 4;
         }
         else if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
@@ -1034,18 +1057,18 @@ public static class ModernVersion
             activeFlags = 1;
             newFlags = AuraFlagsModern.None;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsTBC.NotCancelable))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsTBC.NotCancelable))
                 newFlags |= AuraFlagsModern.Negative;
-            else if (oldFlags.HasAnyFlag(AuraFlagsTBC.Cancelable))
+            else if (oldFlags.HasAnyFlag((ushort)AuraFlagsTBC.Cancelable))
                 newFlags |= (AuraFlagsModern.Positive | AuraFlagsModern.Cancelable);
             else if (slot >= 40)
                 newFlags |= AuraFlagsModern.Negative;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsTBC.EffectIndex0))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsTBC.EffectIndex0))
                 activeFlags |= 1;
-            if (oldFlags.HasAnyFlag(AuraFlagsTBC.EffectIndex1))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsTBC.EffectIndex1))
                 activeFlags |= 2;
-            if (oldFlags.HasAnyFlag(AuraFlagsTBC.EffectIndex2))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsTBC.EffectIndex2))
                 activeFlags |= 4;
         }
         else
@@ -1053,21 +1076,21 @@ public static class ModernVersion
             activeFlags = 0;
             newFlags = AuraFlagsModern.None;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.Negative))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.Negative))
                 newFlags |= AuraFlagsModern.Negative;
-            else if (oldFlags.HasAnyFlag(AuraFlagsWotLK.Positive))
+            else if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.Positive))
                 newFlags |= (AuraFlagsModern.Positive | AuraFlagsModern.Cancelable);
 
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.NoCaster))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.NoCaster))
                 newFlags |= AuraFlagsModern.NoCaster;
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.Duration))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.Duration))
                 newFlags |= AuraFlagsModern.Duration;
 
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.EffectIndex0))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.EffectIndex0))
                 activeFlags |= 1;
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.EffectIndex1))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.EffectIndex1))
                 activeFlags |= 2;
-            if (oldFlags.HasAnyFlag(AuraFlagsWotLK.EffectIndex2))
+            if (oldFlags.HasAnyFlag((ushort)AuraFlagsWotLK.EffectIndex2))
                 activeFlags |= 4;
         }
     }

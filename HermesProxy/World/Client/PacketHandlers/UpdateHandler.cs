@@ -1282,7 +1282,19 @@ public partial class WorldClient
     /// </summary>
     internal static BitArray BuildUpdateMask(ReadOnlySpan<int> words, int length)
     {
-        var mask = new BitArray(Math.Max(length, words.Length * 32));
+        var mask = new BitArray(0);
+        FillUpdateMask(mask, words, length);
+        return mask;
+    }
+
+    /// <summary>
+    /// <see cref="BuildUpdateMask"/> into an existing BitArray, which ends up exactly as a fresh
+    /// one would: resized, cleared, then the words' bits set.
+    /// </summary>
+    internal static void FillUpdateMask(BitArray mask, ReadOnlySpan<int> words, int length)
+    {
+        mask.Length = Math.Max(length, words.Length * 32);
+        mask.SetAll(false);
         for (int w = 0; w < words.Length; w++)
         {
             uint word = (uint)words[w];
@@ -1292,8 +1304,14 @@ public partial class WorldClient
                 word &= word - 1;
             }
         }
-        return mask;
     }
+
+    // Refilled for every Values block this client reads, instead of two fresh BitArrays per block
+    // (21 MB over an 18-minute Alterac Valley). Safe because each block's masks are consumed by
+    // StoreObjectUpdate before the next block is read, nothing keeps a reference to either, and a
+    // session runs one handler at a time.
+    private readonly BitArray _updateMaskScratch = new(0);
+    private readonly BitArray _changedMaskScratch = new(0);
 
     [System.Diagnostics.Conditional("DEBUG_UPDATES")]
     private void PrintValue<T>(string name, T obj, params object[] indexes)
@@ -1367,13 +1385,14 @@ public partial class WorldClient
             maskLength = Math.Max(maskBits, objectFieldEnd);
         }
 
-        // Built once at its final length. BitArray(int[]) copied a throwaway int[], and widening it
-        // afterwards through mask.Length reallocated it a second time.
-        var mask = BuildUpdateMask(maskWords, maskLength);
+        var mask = _updateMaskScratch;
+        FillUpdateMask(mask, maskWords, maskLength);
         outUpdateMaskArray = mask;
         // All-false at maskSize * 32 bits, which is what BitArray(new int[maskSize]) produced. The
         // in-range check in the write-back relies on that length, so it is deliberately not widened.
-        outActuallyChangedValuesMaskArray = new BitArray(maskBits);
+        _changedMaskScratch.Length = maskBits;
+        _changedMaskScratch.SetAll(false);
+        outActuallyChangedValuesMaskArray = _changedMaskScratch;
         // A create starts this object's field cache from empty; sizing it for the fields the mask
         // carries avoids growing it through every intermediate capacity on the way there.
         var dict = oldValues ?? new Dictionary<int, UpdateField>(setBits);
@@ -1744,7 +1763,7 @@ public partial class WorldClient
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 moveInfo.PitchRate = packet.ReadFloat();
 
-            if (moveFlags.HasAnyFlag(MovementFlagWotLK.SplineEnabled))
+            if (moveFlags.HasAnyFlag((uint)MovementFlagWotLK.SplineEnabled))
             {
                 moveInfo.HasSplineData = true;
                 ServerSideMovement monsterMove = new ServerSideMovement();
@@ -2320,16 +2339,16 @@ public partial class WorldClient
         int UNIT_FIELD_FLAGS = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS);
         if (UNIT_FIELD_FLAGS >= 0 && updates.ContainsKey(UNIT_FIELD_FLAGS))
         {
-            if (updates[UNIT_FIELD_FLAGS].UInt32Value.HasAnyFlag(UnitFlags.Pvp))
+            if (updates[UNIT_FIELD_FLAGS].UInt32Value.HasAnyFlag((uint)UnitFlags.Pvp))
                 flags |= (byte)PvPFlags.PvP;
         }
 
         int PLAYER_FLAGS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FLAGS);
         if (PLAYER_FLAGS >= 0 && updates.ContainsKey(PLAYER_FLAGS))
         {
-            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag(PlayerFlagsLegacy.FreeForAllPvP))
+            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag((uint)PlayerFlagsLegacy.FreeForAllPvP))
                 flags |= (byte)PvPFlags.FFAPvp;
-            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag(PlayerFlagsLegacy.Sanctuary))
+            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag((uint)PlayerFlagsLegacy.Sanctuary))
                 flags |= (byte)PvPFlags.Sanctuary;
         }
 
@@ -3011,7 +3030,7 @@ public partial class WorldClient
 
                 // Here because of this bullshit in cmangos:
                 // https://github.com/cmangos/mangos-tbc/blob/fd093b33071b546545cc5973608304bccc5a041b/src/game/Entities/Object.cpp#L544
-                if (updateData.UnitData.Flags.HasAnyFlag(UnitFlags.ServerControlled) && isCreate &&
+                if (updateData.UnitData.Flags.GetValueOrDefault().HasAnyFlag((uint)UnitFlags.ServerControlled) && isCreate &&
                     guid == GetSession().GameState.CurrentPlayerGuid && updateData.CreateData.MoveSpline == null)
                     updateData.UnitData.Flags &= ~(uint)UnitFlags.ServerControlled;
 
@@ -3031,7 +3050,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     guid == GetSession().GameState.CurrentPlayerGuid &&
                     GetSession().GameState.IsInTaxiFlight &&
-                    !updateData.UnitData.Flags.HasAnyFlag(UnitFlags.TaxiFlight))
+                    !updateData.UnitData.Flags.GetValueOrDefault().HasAnyFlag((uint)UnitFlags.TaxiFlight))
                 {
                     ControlUpdate control = new ControlUpdate();
                     control.Guid = guid;
@@ -3494,8 +3513,12 @@ public partial class WorldClient
                 int questsCount = LegacyVersion.GetQuestLogSize();
                 for (int i = 0; i < questsCount; i++)
                 {
+                    // Only a slot the update carries materialises the array. Storing null into a
+                    // fresh one changed nothing a reader can see, but it allocated the whole log
+                    // for every player update in view, quest fields or not.
                     QuestLog? entry = ReadQuestLogEntry(i, updateMaskArray, updates);
-                    updateData.PlayerData.EnsureQuestLog()[i] = entry!;
+                    if (entry != null)
+                        updateData.PlayerData.EnsureQuestLog()[i] = entry;
                 }
             }
             int PLAYER_CHOSEN_TITLE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHOSEN_TITLE);
@@ -4909,12 +4932,12 @@ public partial class WorldClient
                 updateData.CorpseData.Flags = updates[CORPSE_FIELD_FLAGS].UInt32Value;
 
                 // These flags have a different meaning in modern client.
-                if (updateData.CorpseData.Flags.HasAnyFlag(CorpseFlags.HideHelm))
+                if (updateData.CorpseData.Flags.GetValueOrDefault().HasAnyFlag((uint)CorpseFlags.HideHelm))
                 {
                     updateData.CorpseData.Flags &= ~(uint)CorpseFlags.HideHelm;
                     updateData.CorpseData.Items[EquipmentSlot.Head] = null;
                 }
-                if (updateData.CorpseData.Flags.HasAnyFlag(CorpseFlags.HideCloak))
+                if (updateData.CorpseData.Flags.GetValueOrDefault().HasAnyFlag((uint)CorpseFlags.HideCloak))
                 {
                     updateData.CorpseData.Flags &= ~(uint)CorpseFlags.HideCloak;
                     updateData.CorpseData.Items[EquipmentSlot.Cloak] = null;
