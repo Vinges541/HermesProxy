@@ -1779,7 +1779,7 @@ public partial class WorldClient
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 {
                     SplineFlagWotLK splineFlags = (SplineFlagWotLK)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagWotLK, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1803,7 +1803,7 @@ public partial class WorldClient
                 else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     SplineFlagTBC splineFlags = (SplineFlagTBC)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagTBC, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1827,7 +1827,7 @@ public partial class WorldClient
                 else
                 {
                     SplineFlagVanilla splineFlags = (SplineFlagVanilla)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagVanilla, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1983,7 +1983,7 @@ public partial class WorldClient
 
         if (updateData != null && moveInfo != null)
         {
-            moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+            moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>());
             moveInfo.ValidateMovementInfo();
             updateData.CreateData.MoveInfo = moveInfo;
         }
@@ -2663,7 +2663,10 @@ public partial class WorldClient
             {
                 int sizePerEntry = 3;
 
-                Func<int, ItemEnchantment?> ReadEnchantData = delegate (int slot)
+                // A local function, not a delegate: a delegate's closure captured this method's
+                // parameters, and captured parameters are hoisted at method entry, so every call -
+                // every creature and player block, not just items - allocated it.
+                ItemEnchantment? ReadEnchantData(int slot)
                 {
                     ItemEnchantment? enchantment = null;
                     int idIndex = ITEM_FIELD_ENCHANTMENT + slot * sizePerEntry;
@@ -2691,7 +2694,7 @@ public partial class WorldClient
                         enchantment.Charges = (ushort)updates[chargesIndex].UInt32Value;
                     }
                     return enchantment;
-                };
+                }
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
@@ -3006,7 +3009,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     UnitFlagsVanilla vanillaFlags = (UnitFlagsVanilla)updates[UNIT_FIELD_FLAGS].UInt32Value;
-                    updateData.UnitData.Flags = (uint)(vanillaFlags.CastFlags<UnitFlags>());
+                    updateData.UnitData.Flags = (uint)(vanillaFlags.CastFlags<UnitFlagsVanilla, UnitFlags>());
 
                     if (vanillaFlags.HasAnyFlag(UnitFlagsVanilla.PetRename))
                     {
@@ -3181,7 +3184,7 @@ public partial class WorldClient
                 UnitDynamicFlagsLegacy flags = (UnitDynamicFlagsLegacy)(updates[UNIT_DYNAMIC_FLAGS].UInt32Value);
                 if (flags.HasFlag(UnitDynamicFlagsLegacy.Tapped) && flags.HasFlag(UnitDynamicFlagsLegacy.TappedByPlayer))
                     flags &= ~(UnitDynamicFlagsLegacy.Tapped | UnitDynamicFlagsLegacy.TappedByPlayer);
-                updateData.ObjectData.DynamicFlags = (uint)flags.CastFlags<UnitDynamicFlagsModern>();
+                updateData.ObjectData.DynamicFlags = (uint)flags.CastFlags<UnitDynamicFlagsLegacy, UnitDynamicFlagsModern>();
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
@@ -3229,7 +3232,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     NPCFlagsVanilla vanillaFlags = (NPCFlagsVanilla)updates[UNIT_NPC_FLAGS].UInt32Value;
-                    updateData.UnitData.EnsureNpcFlags()[0] = (uint)(vanillaFlags.CastFlags<NPCFlags>());
+                    updateData.UnitData.EnsureNpcFlags()[0] = (uint)(vanillaFlags.CastFlags<NPCFlagsVanilla, NPCFlags>());
                 }
                 else
                 {
@@ -3459,7 +3462,7 @@ public partial class WorldClient
             if (PLAYER_FLAGS >= 0 && updateMaskArray[PLAYER_FLAGS])
             {
                 PlayerFlagsLegacy legacyFlags = (PlayerFlagsLegacy)updates[PLAYER_FLAGS].UInt32Value;
-                var flags = legacyFlags.CastFlags<PlayerFlags>();
+                var flags = legacyFlags.CastFlags<PlayerFlagsLegacy, PlayerFlags>();
                 if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
                     GetSession().GameState.CurrentPlayerStorage.Settings.PatchFlags(ref flags); // Some patches like auto guild inv decline
                 updateData.PlayerData.PlayerFlags = (uint) flags;
@@ -4801,7 +4804,7 @@ public partial class WorldClient
                 // GameObject.cpp:2835-2838 writes uint16 dynFlags then int16 pathProgress),
                 // so carry them across verbatim instead of losing them to the remap.
                 GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)(effectiveLegacyRaw & 0x0000FFFFu);
-                uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsModern>();
+                uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsLegacy, GameObjectDynamicFlagsModern>();
                 uint preservedHigh = isTransport ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
                 updateData.ObjectData.DynamicFlags = (oldValue | preservedHigh | newLow);
                 Log.Print(LogType.Trace,

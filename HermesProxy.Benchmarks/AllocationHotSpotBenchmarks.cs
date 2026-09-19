@@ -18,6 +18,7 @@ namespace HermesProxy.Benchmarks;
 //   HasAnyFlag      14%: IConvertible boxed both arguments and the enum's value again in ToUInt64
 //   UpdateMask      two fresh BitArrays per Values block, now one refilled pair per client
 //   PackedGuid      a byte[8] per half of every packed GUID written
+//   CastFlags       the Enum receiver boxed every movement and spline flag translation
 [MemoryDiagnoser]
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 [CategoriesColumn]
@@ -58,6 +59,20 @@ public class AllocationHotSpotBenchmarks
     private readonly BitArray _changedScratch = new(0);
     private readonly WowGuid128[] _guids = new WowGuid128[16];
     private WorldPacket _packet = null!;
+
+    // A spread of what HandleMonsterMove and MSG_MOVE_* translate: single flags, which hit the
+    // direct mapping, and combinations, which take the per-bit loop.
+    private static readonly SplineFlagWotLK[] SplineFlags =
+    [
+        SplineFlagWotLK.None, SplineFlagWotLK.WalkMode, SplineFlagWotLK.Flying,
+        SplineFlagWotLK.FinalPoint | SplineFlagWotLK.WalkMode, SplineFlagWotLK.Flying | SplineFlagWotLK.Cyclic,
+    ];
+
+    private static readonly MovementFlagWotLK[] MovementFlags =
+    [
+        MovementFlagWotLK.None, MovementFlagWotLK.Forward, MovementFlagWotLK.Forward | MovementFlagWotLK.StrafeLeft,
+        MovementFlagWotLK.Falling, MovementFlagWotLK.Swimming | MovementFlagWotLK.Forward,
+    ];
 
     [GlobalSetup]
     public void Setup()
@@ -136,6 +151,26 @@ public class AllocationHotSpotBenchmarks
             if (_playerMask.HasAnyFlag(SectionFlags[i]))
                 changed |= 1u << i;
         return changed;
+    }
+
+    // ---- CastFlags: five spline and five movement flag translations ----
+
+    [BenchmarkCategory("CastFlags"), Benchmark(Baseline = true)]
+    public uint CastFlags_EnumReceiver()
+    {
+        uint sum = 0;
+        foreach (var f in SplineFlags) sum += (uint)f.CastFlags<SplineFlagModern>();
+        foreach (var f in MovementFlags) sum += (uint)f.CastFlags<MovementFlagModern>();
+        return sum;
+    }
+
+    [BenchmarkCategory("CastFlags"), Benchmark]
+    public uint CastFlags()
+    {
+        uint sum = 0;
+        foreach (var f in SplineFlags) sum += (uint)f.CastFlags<SplineFlagWotLK, SplineFlagModern>();
+        foreach (var f in MovementFlags) sum += (uint)f.CastFlags<MovementFlagWotLK, MovementFlagModern>();
+        return sum;
     }
 
     // ---- Update mask: the two BitArrays one Values block needs ----

@@ -4,6 +4,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Dispatch;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -111,10 +112,7 @@ public sealed class MovementInfo
         return copy;
     }
 
-    public void SetMovementFlags(MovementFlagModern f) { Flags = (uint)f; }
-    public void AddMovementFlag(MovementFlagModern f) { Flags |= (uint)f; }
-    public void RemoveMovementFlag(MovementFlagModern f) { Flags &= ~(uint)f; }
-    public bool HasMovementFlag(MovementFlagModern f) { return (Flags & (uint)f) != 0; }
+    private static readonly Microsoft.Extensions.Logging.ILogger _melMovement = Log.CreateMelLogger(Log.CategoryServer);
 
     public void ReadMovementInfoLegacy(WorldPacket packet, GameSessionData gameState)
     {
@@ -131,14 +129,14 @@ public sealed class MovementInfo
         else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
             MovementFlagTBC flags = (MovementFlagTBC)packet.ReadUInt32();
-            info.Flags = (uint)flags.CastFlags<MovementFlagWotLK>();
+            info.Flags = (uint)flags.CastFlags<MovementFlagTBC, MovementFlagWotLK>();
             info.FlagsExtra = packet.ReadUInt8();
             hasPitch = flags.HasAnyFlag(MovementFlagTBC.Swimming | MovementFlagTBC.Flying2);
         }
         else
         {
             MovementFlagVanilla flags = (MovementFlagVanilla)packet.ReadUInt32();
-            info.Flags = (uint)flags.CastFlags<MovementFlagWotLK>();
+            info.Flags = (uint)flags.CastFlags<MovementFlagVanilla, MovementFlagWotLK>();
             hasPitch = flags.HasAnyFlag(MovementFlagVanilla.Swimming);
             Hover = flags.HasAnyFlag(MovementFlagVanilla.FixedZ);
         }
@@ -190,11 +188,11 @@ public sealed class MovementInfo
 
         uint flags;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
-            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagWotLK>());
+            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagModern, MovementFlagWotLK>());
         else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagTBC>());
+            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagModern, MovementFlagTBC>());
         else
-            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagVanilla>());
+            flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagModern, MovementFlagVanilla>());
 
         if (info.TransportGuid != default)
         {
@@ -768,48 +766,50 @@ public sealed class MovementInfo
         ClampOrientation(ref Orientation);
         ClampOrientation(ref TransportOrientation);
 
-        var RemoveViolatingFlags = new Action<bool, MovementFlagModern>((check, maskToRemove) =>
+        // A local function rather than an Action: the lambda captured this, so every call
+        // allocated a delegate, and this runs for every movement packet from every unit in view.
+        void RemoveViolatingFlags(bool check, MovementFlagModern maskToRemove)
         {
             if (check)
             {
-                Log.Print(LogType.Error, $"Violation of MovementFlags found ({check}). MovementFlags: {Flags}, MovementFlags2: {FlagsExtra}. Mask {maskToRemove} will be removed.");
-                RemoveMovementFlag(maskToRemove);
+                MovementLogMessages.ViolatingFlagsRemoved(_melMovement, Flags, FlagsExtra, maskToRemove);
+                Flags.RemoveFlag((uint)maskToRemove);
             }
-        });
+        }
 
         /*! This must be a packet spoofing attempt. MOVEMENTFLAG_ROOT sent from the client is not valid
             in conjunction with any of the moving movement flags such as MOVEMENTFLAG_FORWARD.
             It will freeze clients that receive this player's movement info.
         */
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.Root) && HasMovementFlag(MovementFlagModern.MaskMoving), MovementFlagModern.MaskMoving);
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.Root) && Flags.HasAnyFlag((uint)MovementFlagModern.MaskMoving), MovementFlagModern.MaskMoving);
 
         //! Cannot ascend and descend at the same time
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.Ascending) && HasMovementFlag(MovementFlagModern.Descending),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.Ascending) && Flags.HasAnyFlag((uint)MovementFlagModern.Descending),
             MovementFlagModern.Ascending | MovementFlagModern.Descending);
 
         //! Cannot move left and right at the same time
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.TurnLeft) && HasMovementFlag(MovementFlagModern.TurnRight),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.TurnLeft) && Flags.HasAnyFlag((uint)MovementFlagModern.TurnRight),
             MovementFlagModern.TurnLeft | MovementFlagModern.TurnRight);
 
         //! Cannot strafe left and right at the same time
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.StrafeLeft) && HasMovementFlag(MovementFlagModern.StrafeRight),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.StrafeLeft) && Flags.HasAnyFlag((uint)MovementFlagModern.StrafeRight),
             MovementFlagModern.StrafeLeft | MovementFlagModern.StrafeRight);
 
         //! Cannot pitch up and down at the same time
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.PitchUp) && HasMovementFlag(MovementFlagModern.PitchDown),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.PitchUp) && Flags.HasAnyFlag((uint)MovementFlagModern.PitchDown),
             MovementFlagModern.PitchUp | MovementFlagModern.PitchDown);
 
         //! Cannot move forwards and backwards at the same time
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.Forward) && HasMovementFlag(MovementFlagModern.Backward),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.Forward) && Flags.HasAnyFlag((uint)MovementFlagModern.Backward),
             MovementFlagModern.Forward | MovementFlagModern.Backward);
 
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.DisableGravity | MovementFlagModern.CanFly) && HasMovementFlag(MovementFlagModern.Falling),
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)(MovementFlagModern.DisableGravity | MovementFlagModern.CanFly)) && Flags.HasAnyFlag((uint)MovementFlagModern.Falling),
             MovementFlagModern.Falling);
 
-        RemoveViolatingFlags(HasMovementFlag(MovementFlagModern.SplineElevation) && MathF.Abs(SplineElevation) <= 1e-5f, MovementFlagModern.SplineElevation);
+        RemoveViolatingFlags(Flags.HasAnyFlag((uint)MovementFlagModern.SplineElevation) && MathF.Abs(SplineElevation) <= 1e-5f, MovementFlagModern.SplineElevation);
 
         // Client first checks if spline elevation != 0, then verifies flag presence
         if (MathF.Abs(SplineElevation) > 1e-5f)
-            AddMovementFlag(MovementFlagModern.SplineElevation);
+            Flags.AddFlag((uint)MovementFlagModern.SplineElevation);
     }
 }

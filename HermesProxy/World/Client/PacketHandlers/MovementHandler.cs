@@ -97,7 +97,7 @@ public partial class WorldClient
         moveUpdate.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
         moveUpdate.MoveInfo = new();
         moveUpdate.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
-        moveUpdate.MoveInfo.Flags = (uint)(((MovementFlagWotLK)moveUpdate.MoveInfo.Flags).CastFlags<MovementFlagModern>());
+        moveUpdate.MoveInfo.Flags = (uint)(((MovementFlagWotLK)moveUpdate.MoveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>());
         moveUpdate.MoveInfo.ValidateMovementInfo();
         SendPacketToClient(moveUpdate);
     }
@@ -109,7 +109,7 @@ public partial class WorldClient
         knockback.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
         knockback.MoveInfo = new();
         knockback.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
-        knockback.MoveInfo.Flags = (uint)(((MovementFlagWotLK)knockback.MoveInfo.Flags).CastFlags<MovementFlagModern>());
+        knockback.MoveInfo.Flags = (uint)(((MovementFlagWotLK)knockback.MoveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>());
         knockback.MoveInfo.JumpSinAngle = packet.ReadFloat();
         knockback.MoveInfo.JumpCosAngle = packet.ReadFloat();
         knockback.MoveInfo.JumpHorizontalSpeed = packet.ReadFloat();
@@ -179,7 +179,7 @@ public partial class WorldClient
         teleport.MoveCounter = packet.ReadUInt32();
         MovementInfo moveInfo = new();
         moveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
-        moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+        moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>());
         moveInfo.ValidateMovementInfo();
         // A mover riding something expects deck-relative Pos/Facing, not world coords:
         // Unit::SendTeleportPacket runs the position through CalculatePassengerOffset
@@ -464,7 +464,7 @@ public partial class WorldClient
         speed.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
         speed.MoveInfo = new MovementInfo();
         speed.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
-        var newFlags = ((MovementFlagWotLK)speed.MoveInfo.Flags).CastFlags<MovementFlagModern>();
+        var newFlags = ((MovementFlagWotLK)speed.MoveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>();
         speed.MoveInfo.Flags = (uint)(newFlags);
         speed.MoveInfo.ValidateMovementInfo();
         speed.Speed = packet.ReadFloat();
@@ -625,7 +625,7 @@ public partial class WorldClient
                     moveSpline.SplineFlags |= SplineFlagModern.Steering | SplineFlagModern.Unknown10;
             }
             else
-                moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagVanilla, SplineFlagModern>();
         }
         else if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
         {
@@ -646,7 +646,7 @@ public partial class WorldClient
                     moveSpline.SplineFlags |= SplineFlagModern.Steering | SplineFlagModern.Unknown10;
             }
             else
-                moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagTBC, SplineFlagModern>();
         }
         else
         {
@@ -655,7 +655,7 @@ public partial class WorldClient
             hasTrajectory = splineFlags.HasAnyFlag(SplineFlagWotLK.Trajectory);
             hasCatmullRom = SplineFlagTranslation.IsSmoothPath(splineFlags);
             isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
-            moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+            moveSpline.SplineFlags = splineFlags.CastFlags<SplineFlagWotLK, SplineFlagModern>();
         }
 
         if (hasAnimTier)

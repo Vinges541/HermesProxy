@@ -36,7 +36,7 @@ dotnet run --project HermesProxy.Benchmarks -c Release -- --list flat
 | `MovementHandlerPrologueBenchmarks.cs` | `HandlePlayerMove` opcode translation: string/reflection round trip vs the prebuilt map |
 | `UpdateMaskBenchmarks.cs` | V1_14/V2_5 `UpdateFieldsArray` / `DynamicUpdateFieldsArray` write path vs the previous `BitArray`-backed mask (verbatim `Legacy*` copies) |
 | `HighGuidBenchmarks.cs` | `HighGuid` high-guid type lookup and 64↔128 guid conversion vs the previous per-lookup `HighGuid` object (verbatim `Legacy*` copies) |
-| `AllocationHotSpotBenchmarks.cs` | The update-path hot spots from the 2026-09 Alterac Valley allocation traces — `GetUpdateField`, `HasAnyFlag`, update-mask reuse, packed GUIDs — each against a verbatim `Legacy*` copy, one baseline per category |
+| `AllocationHotSpotBenchmarks.cs` | The update-path hot spots from the 2026-09 Alterac Valley allocation traces — `GetUpdateField`, `HasAnyFlag`, update-mask reuse, packed GUIDs, `CastFlags` — each against a verbatim `Legacy*` copy, one baseline per category |
 
 ## Conventions
 
