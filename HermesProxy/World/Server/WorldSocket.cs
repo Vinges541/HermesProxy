@@ -52,6 +52,9 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     // Source-generated [LoggerMessage] methods use this MEL logger. SourceFile and NetDir are
     // passed per-call but resolve to the same cached strings, so they compile to const loads.
     private static readonly Microsoft.Extensions.Logging.ILogger _melLog = Log.CreateMelLogger(Log.CategoryPacket);
+    // Trace sites go through Server: Packet runs at Debug in playtests, so a Trace message on
+    // _melLog could never print.
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer = Log.CreateMelLogger(Log.CategoryServer);
     private static readonly string _sourceFile = nameof(WorldSocket).PadRight(15);
     private static readonly string _netDirRecv = Log.FormatDir(LogNetDir.C2P);
     private static readonly string _netDirSend = Log.FormatDir(LogNetDir.P2C);
@@ -707,65 +710,43 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             // Layout: u32 NumObjUpdates, u16 MapID, then per-update body. Read the first
             // 6 bytes directly from the encoded buffer to surface count/map without re-
             // parsing — useful for diagnosing loading-screen / world-entry desync.
-            if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT && data.Length >= 6)
+            if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT && data.Length >= 6 && Log.IsTraceEnabled)
             {
                 uint numObjUpdates = (uint)(data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24));
                 ushort mapId = (ushort)(data[4] | (data[5] << 8));
-                Log.Print(LogType.Trace,
-                    $"[UpdateObjectTrace][C<P] SMSG_UPDATE_OBJECT bytes={data.Length} NumObjUpdates={numObjUpdates} MapID={mapId}");
+                WorldSocketLogMessages.UpdateObjectSent(_melServer, _sourceFile, _netDirSend, data.Length, numObjUpdates, mapId);
             }
 
-            int packetSize = data.Length;
-            // V3_4_3 has no SMSG_COMPRESSED_PACKET opcode mapping (only
-            // SMSG_COMPRESSED_UPDATE_OBJECT exists), so wrapping a >1KB packet via
-            // SMSG_COMPRESSED_PACKET produces an opcode-zero packet the client silently
-            // drops. Skip per-packet compression for V3_4_3; let the raw packet go out.
-            // Confirmed via WoW's own Hotfix.log: 14KB SMSG_AVAILABLE_HOTFIXES never
-            // resulted in a "ClientAvailableHotfixes" log entry while a smaller (<1KB)
-            // count=0 version of the same opcode always logged it.
+            // Anything over 1 KB goes out as SMSG_COMPRESSED_PACKET, as TrinityCore's
+            // WorldSocket::WritePacketToBuffer does on every build we serve. V3_4_3 used to skip
+            // it because its opcode table lacked the mapping: the envelope went out as opcode 0,
+            // which the client drops, and that is the 14 KB SMSG_AVAILABLE_HOTFIXES that never
+            // reached Hotfix.log. The != 0 check keeps a build without the mapping on plain packets.
             ushort compressedOpcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
-            if (packetSize > 0x400 && _worldCrypt.IsInitialized && compressedOpcode != 0)
-            {
-                using ByteBuffer compressed = new();
-                compressed.WriteInt32(packetSize + 2);
-                Span<byte> opcodeBytes = stackalloc byte[2];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
-                compressed.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
+            bool compress = data.Length > ModernPacketBody.MinSizeForCompression && _worldCrypt.IsInitialized && compressedOpcode != 0;
+            ReadOnlySpan<byte> deflated = compress ? CompressPacket(data, opcode) : default;
+            int bodySize = compress
+                ? ModernPacketBody.CompressedSize(deflated.Length)
+                : ModernPacketBody.PlainSize(data.Length);
 
-                byte[] compressedData;
-                uint compressedSize = CompressPacket(data, opcode, out compressedData);
-                compressed.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
-                compressed.WriteBytes(compressedData, compressedSize);
-
-                packetSize = (int)(compressedSize + 12);
-                opcode = compressedOpcode;
-
-                data = compressed.GetData();
-            }
-
-            using (ByteBuffer body = new())
-            {
-                body.WriteUInt16(opcode);
-                body.WriteBytes(data);
-                packetSize += 2 /*opcode*/;
-
-                data = body.GetData();
-            }
-
-            PacketHeader header = new();
-            header.Size = packetSize;
-            _worldCrypt.Encrypt(data, header.Tag);
-
-            // Frame header + body into one pooled buffer. AsyncWrite is a blocking
-            // Socket.Send, so the rental is safe to return the moment it comes back.
-            // The old path built this through a ByteBuffer: a rented buffer plus a full
-            // GetData() copy on top of the frame itself.
-            int framedSize = PacketHeader.StructSize + data.Length;
+            // The body is laid out and encrypted in place behind the header, in one pooled
+            // buffer. AsyncWrite is a blocking Socket.Send, so the rental is safe to return the
+            // moment it comes back. Building it through two ByteBuffers cost two GetData()
+            // copies of every packet on top of the frame (1.4 KB of garbage for a 2 KB one).
+            int framedSize = HeaderSize + bodySize;
             byte[] framed = ArrayPool<byte>.Shared.Rent(framedSize);
             try
             {
+                Span<byte> body = framed.AsSpan(HeaderSize, bodySize);
+                if (compress)
+                    ModernPacketBody.WriteCompressed(body, compressedOpcode, opcode, data, deflated);
+                else
+                    ModernPacketBody.WritePlain(body, opcode, data);
+
+                PacketHeader header = new();
+                header.Size = bodySize;
+                _worldCrypt.Encrypt(body, header.Tag);
                 header.Write(framed);
-                data.CopyTo(framed, PacketHeader.StructSize);
 
                 AsyncWrite(framed.AsSpan(0, framedSize));
             }
@@ -776,7 +757,11 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         }
     }
 
-    public uint CompressPacket(byte[] data, ushort opcode, out byte[] outData)
+    /// <summary>
+    /// Deflates opcode + payload onto this connection's stream. The result points into the
+    /// stream's buffer and is valid until the next call; both run under <c>_sendLock</c>.
+    /// </summary>
+    private ReadOnlySpan<byte> CompressPacket(ReadOnlySpan<byte> data, ushort opcode)
     {
         // Drain the prior packet's output, then push opcode + body and flush. Flush()
         // on a compress-mode DeflateStream emits a Z_SYNC_FLUSH boundary (00 00 FF FF)
@@ -792,9 +777,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         _deflater.Write(data);
         _deflater.Flush();
 
-        uint produced = (uint)_compressBuffer.Length;
-        outData = _compressBuffer.GetBuffer();
-        return produced;
+        return _compressBuffer.GetBuffer().AsSpan(0, (int)_compressBuffer.Length);
     }
 
     public override bool Update()
