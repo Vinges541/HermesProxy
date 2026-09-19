@@ -599,7 +599,7 @@ public partial class WorldClient
                 }
                 else
                 {
-                    WorldClientLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+                    WorldClientLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode.ToStringFast(), packet.GetOpcode());
                     if (_isSuccessful == null && !IsIgnorableDuringHandshake(universalOpcode))
                         _isSuccessful = false;
                 }

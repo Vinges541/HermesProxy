@@ -70,7 +70,7 @@ internal static partial class WorldSocketLogMessages
         ILogger logger,
         string SourceFile,
         string NetDir,
-        Opcode Opcode,
+        string Opcode,
         uint OpcodeId);
 
     [LoggerMessage(
@@ -199,7 +199,7 @@ internal static partial class WorldSocketLogMessages
         ILogger logger,
         string SourceFile,
         string NetDir,
-        Opcode Opcode);
+        string Opcode);
 
     [LoggerMessage(
         EventId = 120,

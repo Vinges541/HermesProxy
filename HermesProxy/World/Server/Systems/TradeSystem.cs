@@ -105,6 +105,6 @@ public static class TradeSystem
         if (ctx.GetSession().GameState.TradeJustCompleted)
             WorldSocketLogMessages.TradeActionAfterComplete(_melLog, _sourceFile, _netDirRecv, opcode);
         else
-            WorldSocketLogMessages.TradeActionWithoutSession(_melLog, _sourceFile, _netDirRecv, opcode);
+            WorldSocketLogMessages.TradeActionWithoutSession(_melLog, _sourceFile, _netDirRecv, opcode.ToStringFast());
     }
 }

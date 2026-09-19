@@ -225,7 +225,7 @@ public sealed class ClientOutbox : PacketOutbox<ServerPacket>
 
         foreach (var parked in expired)
             parked.Packet.Discard();
-        OutboxLogMessages.ParkExpired(_log, expired.Count, ParkTimeout.TotalSeconds, expired[0].Packet.GetUniversalOpcode());
+        OutboxLogMessages.ParkExpired(_log, expired.Count, ParkTimeout.TotalSeconds, expired[0].Packet.GetUniversalOpcode().ToStringFast());
     }
 
     // ---- routing ------------------------------------------------------------------------------
@@ -268,7 +268,7 @@ public sealed class ClientOutbox : PacketOutbox<ServerPacket>
 
         if (refused)
         {
-            OutboxLogMessages.ParkOverflow(_log, MaxParked, packet.GetUniversalOpcode());
+            OutboxLogMessages.ParkOverflow(_log, MaxParked, packet.GetUniversalOpcode().ToStringFast());
             packet.Discard();
             return;
         }

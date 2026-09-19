@@ -140,6 +140,7 @@ public static class Opcodes
     }
 }
 
+[ToStringFast]
 public enum Opcode : uint
 {
     /* Generic opcode enumeration

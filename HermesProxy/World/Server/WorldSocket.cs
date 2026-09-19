@@ -488,7 +488,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         var generated = GeneratedCmsgDispatch.Get(universalOpcode);
         if (generated == null)
         {
-            WorldSocketLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+            WorldSocketLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode.ToStringFast(), packet.GetOpcode());
             return;
         }
 

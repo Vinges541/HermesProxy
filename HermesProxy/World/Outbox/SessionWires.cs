@@ -1,5 +1,6 @@
 using Framework.Constants;
 using Framework.Logging;
+using HermesProxy.World.Enums;
 using HermesProxy.World.Logging;
 
 namespace HermesProxy.World.Outbox;
@@ -34,7 +35,7 @@ internal sealed class SessionServerWire(GlobalSessionData session) : IServerWire
             return;
         }
 
-        OutboxLogMessages.WireUnavailable(_log, "server", packet.GetUniversalOpcode(false), "world client");
+        OutboxLogMessages.WireUnavailable(_log, "server", packet.GetUniversalOpcode(false).ToStringFast(), "world client");
         packet.Dispose();
     }
 }

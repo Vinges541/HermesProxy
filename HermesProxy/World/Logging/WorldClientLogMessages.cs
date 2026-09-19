@@ -72,7 +72,7 @@ internal static partial class WorldClientLogMessages
         ILogger logger,
         string SourceFile,
         string NetDir,
-        Opcode Opcode,
+        string Opcode,
         uint OpcodeId);
 
     [LoggerMessage(
