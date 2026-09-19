@@ -29,8 +29,9 @@ namespace HermesProxy.Tests.World.Server;
 /// </remarks>
 public class InspectHonorStatsPacketTests
 {
-    private static readonly FieldInfo WorldPacketField =
-        typeof(ServerPacket).GetField("_worldPacket", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    // A lazily created property since ServerPacket stopped allocating it for packets that never write.
+    private static readonly PropertyInfo WorldPacketField =
+        typeof(ServerPacket).GetProperty("_worldPacket", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     // Player/0 R1/S0 Map: 0 Low: 82 -> packs to 01 A0 52 04 08.
     private static readonly WowGuid128 CapturedTarget = new(Low: 0x52, High: 0x0800040000000000);

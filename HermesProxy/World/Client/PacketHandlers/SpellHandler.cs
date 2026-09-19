@@ -823,12 +823,12 @@ public partial class WorldClient
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
         {
-            if (flags.HasAnyFlag(CastFlag.PredictedPower))
+            if (flags.HasAnyFlag((uint)CastFlag.PredictedPower))
             {
                 packet.ReadInt32(); // Rune Cooldown
             }
 
-            if (flags.HasAnyFlag(CastFlag.RuneInfo))
+            if (flags.HasAnyFlag((uint)CastFlag.RuneInfo))
             {
                 // Legacy 3.3.5 wire: u8 rechargingMask (= pre-cast usable mask, normally 0x3F),
                 // u8 usableMask (= post-cast usable mask), then one u8 cooldown byte per rune
@@ -906,7 +906,7 @@ public partial class WorldClient
 
             if (isSpellGo)
             {
-                if (flags.HasAnyFlag(CastFlag.AdjustMissile))
+                if (flags.HasAnyFlag((uint)CastFlag.AdjustMissile))
                 {
                     dbdata.MissileTrajectory.Pitch = packet.ReadFloat(); // Elevation
                     dbdata.MissileTrajectory.TravelTime = packet.ReadUInt32(); // Delay time
@@ -914,7 +914,7 @@ public partial class WorldClient
             }
         }
 
-        if (flags.HasAnyFlag(CastFlag.Projectile))
+        if (flags.HasAnyFlag((uint)CastFlag.Projectile))
         {
             dbdata.AmmoDisplayId = packet.ReadInt32();
             dbdata.AmmoInventoryType = packet.ReadInt32();
@@ -924,7 +924,7 @@ public partial class WorldClient
         {
             if (isSpellGo)
             {
-                if (flags.HasAnyFlag(CastFlag.VisualChain))
+                if (flags.HasAnyFlag((uint)CastFlag.VisualChain))
                 {
                     packet.ReadInt32();
                     packet.ReadInt32();
@@ -950,13 +950,13 @@ public partial class WorldClient
             }
             else
             {
-                if (flags.HasAnyFlag(CastFlag.Immunity))
+                if (flags.HasAnyFlag((uint)CastFlag.Immunity))
                 {
                     dbdata.Immunities.School = packet.ReadUInt32();
                     dbdata.Immunities.Value = packet.ReadUInt32();
                 }
 
-                if (flags.HasAnyFlag(CastFlag.HealPrediction))
+                if (flags.HasAnyFlag((uint)CastFlag.HealPrediction))
                 {
                     packet.ReadInt32(); // Predicted Spell ID
 

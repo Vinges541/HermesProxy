@@ -20,8 +20,9 @@ public class SpanWriteParityTests
 {
     private static readonly Assembly ProxyAssembly = typeof(ServerPacket).Assembly;
 
-    private static readonly FieldInfo WorldPacketField =
-        typeof(ServerPacket).GetField("_worldPacket", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    // A lazily created property since ServerPacket stopped allocating it for packets that never write.
+    private static readonly PropertyInfo WorldPacketField =
+        typeof(ServerPacket).GetProperty("_worldPacket", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     private static readonly NullabilityInfoContext Nullability = new();
 

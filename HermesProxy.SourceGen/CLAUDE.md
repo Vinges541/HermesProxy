@@ -4,7 +4,7 @@ Roslyn source generators. They emit code that lands directly on the wire, so a m
 does not throw — it produces a subtly malformed packet that the client silently drops or
 mis-renders. Treat every change as a wire-format change.
 
-## The four generators
+## The five generators
 
 | Generator | Emits | Driven by |
 |---|---|---|
@@ -12,6 +12,7 @@ mis-renders. Treat every change as a wire-format change.
 | `OpcodeTableGenerator` | Opcode lookup tables | per-version `Opcode.cs` enums |
 | `UpdateFieldTableGenerator` | Legacy update-field tables | per-version update-field enums |
 | `PacketDispatchGenerator` | `GeneratedCmsgDispatch` / `GeneratedSmsgDispatch` function-pointer tables | `[HandlesCmsg]` / `[HandlesSmsg]` / `[PacketCodec]` — see `HermesProxy/World/Dispatch/CLAUDE.md` |
+| `EnumNameGenerator` | `{Enum}Names.ToStringFast()` — member → string literal switch, `ToString()` fallback | `[ToStringFast]` on the enum. Use it for any enum named in a log message at Information or above: `Enum.ToString` rebuilds the whole name table after every GC |
 
 This handbook covers the descriptor generator. The dispatch generator's contract, diagnostics
 (HPSG004–007) and snapshot rules are in the `World/Dispatch` and `HermesProxy.Tests/World/Dispatch`

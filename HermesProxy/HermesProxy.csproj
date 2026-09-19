@@ -34,6 +34,10 @@
          sets this; the dispatch generator is what needs it here. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
+    <!-- EnumNameGenerator redirects value.ToString() on a [ToStringFast] enum to the generated
+         switch; the compiler only honours interceptors from namespaces listed here. -->
+    <InterceptorsNamespaces>$(InterceptorsNamespaces);HermesProxy.Generated</InterceptorsNamespaces>
+
     <!-- Write generator output to disk under obj/Generated/ for inspection during prototyping.
          Safe to leave on — the compiler doesn't read these files back, it uses the in-memory copy. -->
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>

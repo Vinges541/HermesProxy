@@ -326,27 +326,37 @@ public sealed class SampleWindow
         if (_count == 0)
             return default;
 
-        var sorted = new double[_count];
-        Array.Copy(_samples, sorted, _count);
-        Array.Sort(sorted);
-
-        return new SampleStats
+        // Rented: every summary sorts a copy of every opcode's window, twice (latency and
+        // allocation), which a fresh array per call turned into steady garbage on a metrics run.
+        double[] rented = System.Buffers.ArrayPool<double>.Shared.Rent(_count);
+        try
         {
-            Count = _count,
-            TotalCount = _totalCount,
-            TotalSum = _totalSum,
-            Min = _min,
-            Max = _max,
-            Average = _sum / _count,
-            P50 = GetPercentile(sorted, 0.50),
-            P95 = GetPercentile(sorted, 0.95),
-            P99 = GetPercentile(sorted, 0.99),
-            IntervalCount = _intervalCount,
-            IntervalMax = _intervalMax,
-        };
+            Span<double> sorted = rented.AsSpan(0, _count);
+            _samples.AsSpan(0, _count).CopyTo(sorted);
+            sorted.Sort();
+
+            return new SampleStats
+            {
+                Count = _count,
+                TotalCount = _totalCount,
+                TotalSum = _totalSum,
+                Min = _min,
+                Max = _max,
+                Average = _sum / _count,
+                P50 = GetPercentile(sorted, 0.50),
+                P95 = GetPercentile(sorted, 0.95),
+                P99 = GetPercentile(sorted, 0.99),
+                IntervalCount = _intervalCount,
+                IntervalMax = _intervalMax,
+            };
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<double>.Shared.Return(rented);
+        }
     }
 
-    private static double GetPercentile(double[] sortedSamples, double percentile)
+    private static double GetPercentile(ReadOnlySpan<double> sortedSamples, double percentile)
     {
         if (sortedSamples.Length == 0) return 0;
         if (sortedSamples.Length == 1) return sortedSamples[0];

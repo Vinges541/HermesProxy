@@ -70,7 +70,7 @@ internal static partial class WorldSocketLogMessages
         ILogger logger,
         string SourceFile,
         string NetDir,
-        Opcode Opcode,
+        string Opcode,
         uint OpcodeId);
 
     [LoggerMessage(
@@ -199,7 +199,7 @@ internal static partial class WorldSocketLogMessages
         ILogger logger,
         string SourceFile,
         string NetDir,
-        Opcode Opcode);
+        string Opcode);
 
     [LoggerMessage(
         EventId = 120,
@@ -211,4 +211,16 @@ internal static partial class WorldSocketLogMessages
         string NetDir,
         double TimeoutSeconds,
         int Remaining);
+
+    [LoggerMessage(
+        EventId = 121,
+        Level = LogLevel.Trace,
+        Message = "[UpdateObjectTrace][C<P] SMSG_UPDATE_OBJECT bytes={Bytes} NumObjUpdates={NumObjUpdates} MapID={MapId}")]
+    public static partial void UpdateObjectSent(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int Bytes,
+        uint NumObjUpdates,
+        ushort MapId);
 }

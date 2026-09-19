@@ -264,7 +264,11 @@ public partial class WorldClient
         }
     }
 
-    private async Task<bool> ReceiveBufferFully(Memory<byte> bufferToFill)
+    // Pooled: the receive loop awaits this three times per legacy packet, and every await that
+    // has to wait for the socket boxed a fresh state machine (18 MB over an 18-minute Alterac
+    // Valley). The result is awaited exactly once, which is all a pooled ValueTask requires.
+    [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<bool> ReceiveBufferFully(Memory<byte> bufferToFill)
     {
         int alreadyReceived = 0;
 
@@ -534,40 +538,11 @@ public partial class WorldClient
 
         WriteLegacySniff(packet, isFromClient: false);
 
-        // Trace-level enrichment for the legacy 3.3.5a SMSG_UPDATE_OBJECT envelope.
-        // Layout: u32 NumObjUpdates, [optional u8 hasTransport in 3.3.5a+], then per-update body.
-        // Peek bytes without advancing the read cursor — paired with the modern outgoing
-        // trace line, this lets us correlate "what came in" with "what went out".
-        if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT)
-        {
-            byte[] raw = packet.GetData();
-            uint numObjUpdates = raw.Length >= 4
-                ? (uint)(raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24))
-                : 0u;
-            byte hasTransport = raw.Length >= 5 ? raw[4] : (byte)0;
-            int hexLen = System.Math.Min(48, raw.Length);
-            string hex = System.BitConverter.ToString(raw, 0, hexLen);
-            // First per-object byte (offset 5) is UpdateTypeLegacy (0=Values, 1=Movement,
-            // 2=CreateObject1, 3=CreateObject2, 4=NearObjects, 5=FarObjects). Decode for
-            // quick eyeballing of the burst type.
-            string firstUpdateType = "n/a";
-            if (raw.Length > 5)
-            {
-                byte t = raw[5];
-                firstUpdateType = t switch
-                {
-                    0 => "Values",
-                    1 => "Movement",
-                    2 => "CreateObject1",
-                    3 => "CreateObject2",
-                    4 => "NearObjects",
-                    5 => "FarObjects",
-                    _ => $"Unknown({t})"
-                };
-            }
-            Log.Print(LogType.Trace,
-                $"[UpdateObjectTrace][C P<S] SMSG_UPDATE_OBJECT rawBytes={raw.Length} numObjUpdates={numObjUpdates} hasTransport={hasTransport} firstUpdateType={firstUpdateType} headHex={hex}");
-        }
+        // Gated rather than left to the level check inside the log call: GetData copies the whole
+        // packet and the hex dump allocates, and this ran on every uncompressed update with
+        // Verbose off.
+        if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT && Log.IsTraceEnabled)
+            TraceUpdateObjectEnvelope(packet);
 
         // The dispatch below is synchronous, so the per-thread allocation counter brackets
         // exactly this packet's parse + translate + send even though ReceiveLoop is async.
@@ -595,7 +570,7 @@ public partial class WorldClient
                 }
                 else
                 {
-                    WorldClientLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+                    WorldClientLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode.ToStringFast(), packet.GetOpcode());
                     if (_isSuccessful == null && !IsIgnorableDuringHandshake(universalOpcode))
                         _isSuccessful = false;
                 }
@@ -609,6 +584,43 @@ public partial class WorldClient
         }
 
         GetSession().OnLegacyPacketHandled(universalOpcode);
+    }
+
+    /// <summary>
+    /// Trace-level enrichment for the legacy 3.3.5a SMSG_UPDATE_OBJECT envelope.
+    /// Layout: u32 NumObjUpdates, [optional u8 hasTransport in 3.3.5a+], then per-update body.
+    /// Peeks bytes without advancing the read cursor — paired with the modern outgoing
+    /// trace line, this lets us correlate "what came in" with "what went out".
+    /// </summary>
+    private static void TraceUpdateObjectEnvelope(WorldPacket packet)
+    {
+        byte[] raw = packet.GetData();
+        uint numObjUpdates = raw.Length >= 4
+            ? (uint)(raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24))
+            : 0u;
+        byte hasTransport = raw.Length >= 5 ? raw[4] : (byte)0;
+        int hexLen = System.Math.Min(48, raw.Length);
+        string hex = System.BitConverter.ToString(raw, 0, hexLen);
+        // First per-object byte (offset 5) is UpdateTypeLegacy (0=Values, 1=Movement,
+        // 2=CreateObject1, 3=CreateObject2, 4=NearObjects, 5=FarObjects). Decode for
+        // quick eyeballing of the burst type.
+        string firstUpdateType = "n/a";
+        if (raw.Length > 5)
+        {
+            byte t = raw[5];
+            firstUpdateType = t switch
+            {
+                0 => "Values",
+                1 => "Movement",
+                2 => "CreateObject1",
+                3 => "CreateObject2",
+                4 => "NearObjects",
+                5 => "FarObjects",
+                _ => $"Unknown({t})"
+            };
+        }
+        UpdateHandlerLogMessages.UpdateObjectEnvelopeIn(
+            _melUpdateValues, raw.Length, numObjUpdates, hasTransport, firstUpdateType, hex);
     }
 
     /// <summary>

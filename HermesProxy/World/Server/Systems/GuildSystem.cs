@@ -276,7 +276,7 @@ public static class GuildSystem
         // Send update to client
         ObjectUpdate updateData = new ObjectUpdate(ctx.GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, ctx.GetSession());
         PlayerFlags flags = settings.CreateNewFlags();
-        updateData.PlayerData.PlayerFlags = (uint) flags;
+        updateData.EnsurePlayerData().PlayerFlags = (uint) flags;
         UpdateObject updatePacket = new UpdateObject(ctx.GetSession().GameState);
         updatePacket.ObjectUpdates.Add(updateData);
         ctx.GetSession().WorldClient!.SendPacketToClient(updatePacket);

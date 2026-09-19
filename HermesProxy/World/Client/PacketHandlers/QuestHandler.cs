@@ -52,7 +52,7 @@ public partial class WorldClient
                 quest.DisplayPopup = packet.ReadBool();
         }
 
-        if (quest.QuestFlags[0].HasAnyFlag(QuestFlags.HiddenRewards) && LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_3_5a_12340))
+        if (quest.QuestFlags[0].HasAnyFlag((uint)QuestFlags.HiddenRewards) && LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_3_5a_12340))
         {
             packet.ReadUInt32(); // Hidden Chosen Items
             packet.ReadUInt32(); // Hidden Items
@@ -454,7 +454,7 @@ public partial class WorldClient
             && GetSession().GameState.CurrentInteractedWithNPC != default)
         {
             uint npcFlags = GetSession().GameState.GetLegacyFieldValueUInt32(GetSession().GameState.CurrentInteractedWithNPC, UnitField.UNIT_NPC_FLAGS);
-            if (npcFlags.HasAnyFlag(NPCFlags.Gossip))
+            if (npcFlags.HasAnyFlag((uint)NPCFlags.Gossip))
                 quest.LaunchGossip = true;
         }
 

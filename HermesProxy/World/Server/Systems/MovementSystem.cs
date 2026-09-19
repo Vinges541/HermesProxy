@@ -273,7 +273,7 @@ public static class MovementSystem
             packet.WriteGuid(movementAck.MoverGUID.To64());
         packet.WriteUInt32(movementAck.Ack.MoveCounter);
         movementAck.Ack.MoveInfo.WriteMovementInfoLegacy(packet);
-        packet.WriteInt32(movementAck.Ack.MoveInfo.Flags.HasAnyFlag(GetFlagForAckOpcode(opcode)) ? 1 : 0);
+        packet.WriteInt32(movementAck.Ack.MoveInfo.Flags.HasAnyFlag((uint)(GetFlagForAckOpcode(opcode))) ? 1 : 0);
         ctx.SendPacketToServer(packet);
     }
 

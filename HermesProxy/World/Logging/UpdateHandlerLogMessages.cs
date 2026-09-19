@@ -43,4 +43,52 @@ internal static partial class UpdateHandlerLogMessages
         Message = "[V343Trace][InvSlot] player slot={Slot} guidLow={GuidLow} guidHigh={GuidHigh}")]
     public static partial void OwnerInvSlot(
         ILogger logger, int slot, ulong guidLow, ulong guidHigh);
+
+    // The five below were interpolated Log.Print(Trace) calls, built for every GameObject create,
+    // every GameObject dynamic-flags change and every uncompressed SMSG_UPDATE_OBJECT whether or
+    // not Verbose was on. Callers still gate on Log.IsTraceEnabled where an argument costs
+    // something to compute.
+
+    [LoggerMessage(
+        EventId = 1202,
+        Level = LogLevel.Trace,
+        Message = "[UpdateObjectTrace][C P<S] SMSG_UPDATE_OBJECT rawBytes={RawBytes} numObjUpdates={NumObjUpdates} " +
+                  "hasTransport={HasTransport} firstUpdateType={FirstUpdateType} headHex={HeadHex}")]
+    public static partial void UpdateObjectEnvelopeIn(
+        ILogger logger, int rawBytes, uint numObjUpdates, byte hasTransport, string firstUpdateType, string headHex);
+
+    [LoggerMessage(
+        EventId = 1203,
+        Level = LogLevel.Trace,
+        Message = "{Action} {CreateType} for {LegacyHigh} for V3_4_3 guidLow={GuidLow} guidHigh={GuidHigh} entryID={EntryId}.")]
+    public static partial void TransportCreate(
+        ILogger logger, string action, string createType, HighGuidTypeLegacy legacyHigh,
+        ulong guidLow, ulong guidHigh, int? entryId);
+
+    [LoggerMessage(
+        EventId = 1204,
+        Level = LogLevel.Trace,
+        Message = "Forwarding {CreateType} for GameObject guidLow={GuidLow} guidHigh={GuidHigh} entryID={EntryId} " +
+                  "typeID={TypeId} state={State} rot=({RotX:F3},{RotY:F3},{RotZ:F3},{RotW:F3}).")]
+    public static partial void GameObjectCreate(
+        ILogger logger, string createType, ulong guidLow, ulong guidHigh, int? entryId, sbyte? typeId, sbyte? state,
+        float? rotX, float? rotY, float? rotZ, float? rotW);
+
+    [LoggerMessage(
+        EventId = 1205,
+        Level = LogLevel.Trace,
+        Message = "[ItemContainerTrace] Forwarding {CreateType} for 0x4700 ItemContainer guidLow={GuidLow} guidHigh={GuidHigh} entryID={EntryId}.")]
+    public static partial void ItemContainerCreate(
+        ILogger logger, string createType, ulong guidLow, ulong guidHigh, int? entryId);
+
+    [LoggerMessage(
+        EventId = 1206,
+        Level = LogLevel.Trace,
+        Message = "[Trace][GO DYN_FLAGS] guidLow={GuidLow} guidHigh={GuidHigh} entry={Entry} legacyRaw=0x{LegacyRaw:X8} " +
+                  "effective=0x{EffectiveLegacyRaw:X8} ({Flags}) -> modernLow=0x{ModernLow:X8} high=0x{PreservedHigh:X8}, " +
+                  "oldDyn=0x{OldValue:X8} oldDynSource={OldDynSource}, finalDyn=0x{FinalDyn:X8}")]
+    public static partial void GameObjectDynamicFlags(
+        ILogger logger, ulong guidLow, ulong guidHigh, int? entry, uint legacyRaw, uint effectiveLegacyRaw,
+        GameObjectDynamicFlagsLegacy flags, uint modernLow, uint preservedHigh, uint oldValue, string oldDynSource,
+        uint finalDyn);
 }

@@ -364,7 +364,8 @@ public partial class WorldClient
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.ReadBool(); // Has Transport
 
-        HashSet<uint> missingItemTemplates = new HashSet<uint>();
+        // Null until an item create names an unknown template, which almost no batch does.
+        HashSet<uint>? missingItemTemplates = null;
         List<AuraUpdate> auraUpdates = new List<AuraUpdate>();
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
 
@@ -519,7 +520,7 @@ public partial class WorldClient
                         if (updateData.ObjectData.EntryID != null &&
                             !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
                         {
-                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                            (missingItemTemplates ??= []).Add((uint)updateData.ObjectData.EntryID);
                         }
                     }
 
@@ -543,8 +544,9 @@ public partial class WorldClient
                                 filtered = !MayForwardTransport(legacyHigh, updateData);
                                 if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
                                     RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
-                                Log.Print(LogType.Trace,
-                                    $"{(filtered ? "Skipping" : "Forwarding")} {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.TransportCreate(_melUpdateValues,
+                                    filtered ? "Skipping" : "Forwarding", "CreateObject1", legacyHigh,
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -552,13 +554,15 @@ public partial class WorldClient
                                     (uint)(updateData.ObjectData.EntryID ?? 0),
                                     updateData.GameObjectData?.TypeID);
                                 var rot = updateData.CreateData?.MoveInfo?.Rotation;
-                                Log.Print(LogType.Trace,
-                                    $"Forwarding CreateObject1 for {legacyHigh} guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"} typeID={updateData.GameObjectData?.TypeID?.ToString() ?? "null"} state={updateData.GameObjectData?.State?.ToString() ?? "null"} rot=({rot?.X.ToString("F3") ?? "?"},{rot?.Y.ToString("F3") ?? "?"},{rot?.Z.ToString("F3") ?? "?"},{rot?.W.ToString("F3") ?? "?"}).");
+                                UpdateHandlerLogMessages.GameObjectCreate(_melUpdateValues, "CreateObject1",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID,
+                                    updateData.GameObjectData?.TypeID, updateData.GameObjectData?.State,
+                                    rot?.X, rot?.Y, rot?.Z, rot?.W);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.ItemContainer)
                             {
-                                Log.Print(LogType.Trace,
-                                    $"[ItemContainerTrace] Forwarding CreateObject1 for 0x4700 ItemContainer guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.ItemContainerCreate(_melUpdateValues, "CreateObject1",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                         }
 
@@ -603,7 +607,7 @@ public partial class WorldClient
                         if (updateData.ObjectData.EntryID != null &&
                             !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
                         {
-                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                            (missingItemTemplates ??= []).Add((uint)updateData.ObjectData.EntryID);
                         }
                     }
 
@@ -620,8 +624,9 @@ public partial class WorldClient
                                 filtered = !MayForwardTransport(legacyHigh, updateData);
                                 if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
                                     RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
-                                Log.Print(LogType.Trace,
-                                    $"{(filtered ? "Skipping" : "Forwarding")} CreateObject2 for {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.TransportCreate(_melUpdateValues,
+                                    filtered ? "Skipping" : "Forwarding", "CreateObject2", legacyHigh,
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -629,13 +634,15 @@ public partial class WorldClient
                                     (uint)(updateData.ObjectData.EntryID ?? 0),
                                     updateData.GameObjectData?.TypeID);
                                 var rot = updateData.CreateData?.MoveInfo?.Rotation;
-                                Log.Print(LogType.Trace,
-                                    $"Forwarding CreateObject2 for {legacyHigh} guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"} typeID={updateData.GameObjectData?.TypeID?.ToString() ?? "null"} state={updateData.GameObjectData?.State?.ToString() ?? "null"} rot=({rot?.X.ToString("F3") ?? "?"},{rot?.Y.ToString("F3") ?? "?"},{rot?.Z.ToString("F3") ?? "?"},{rot?.W.ToString("F3") ?? "?"}).");
+                                UpdateHandlerLogMessages.GameObjectCreate(_melUpdateValues, "CreateObject2",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID,
+                                    updateData.GameObjectData?.TypeID, updateData.GameObjectData?.State,
+                                    rot?.X, rot?.Y, rot?.Z, rot?.W);
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.ItemContainer)
                             {
-                                Log.Print(LogType.Trace,
-                                    $"[ItemContainerTrace] Forwarding CreateObject2 for 0x4700 ItemContainer guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
+                                UpdateHandlerLogMessages.ItemContainerCreate(_melUpdateValues, "CreateObject2",
+                                    guid.Low, guid.High, updateData.ObjectData.EntryID);
                             }
                         }
 
@@ -683,13 +690,16 @@ public partial class WorldClient
             CollectionSync.RefreshUsableToys(GetSession());
         }
 
-        foreach (uint itemId in missingItemTemplates)
+        if (missingItemTemplates != null)
         {
-            WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
-            packet2.WriteUInt32(itemId);
-            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
-                packet2.WriteGuid(WowGuid64.Empty);
-            SendPacketToServer(packet2);
+            foreach (uint itemId in missingItemTemplates)
+            {
+                WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
+                packet2.WriteUInt32(itemId);
+                if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+                    packet2.WriteGuid(WowGuid64.Empty);
+                SendPacketToServer(packet2);
+            }
         }
 
         int activePlayerUpdateIndex = -1;
@@ -788,7 +798,7 @@ public partial class WorldClient
         HashSet<uint>? deferredFor = null;
         if (activePlayerUpdateIndex >= 0)
         {
-            if (missingItemTemplates.Count > 0)
+            if (missingItemTemplates != null)
             {
                 deferredFor = new HashSet<uint>(missingItemTemplates);
             }
@@ -815,7 +825,7 @@ public partial class WorldClient
             // were dispatched by the loop above.
             foreach (uint itemId in deferredFor)
             {
-                if (missingItemTemplates.Contains(itemId))
+                if (missingItemTemplates?.Contains(itemId) == true)
                     continue;
                 WorldPacket reqPacket = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
                 reqPacket.WriteUInt32(itemId);
@@ -1128,7 +1138,7 @@ public partial class WorldClient
         }
     }
 
-    public void ReadNearObjectsBlock(WorldPacket packet, object index)
+    public void ReadNearObjectsBlock(WorldPacket packet, int index)
     {
         var objCount = packet.ReadInt32();
         PrintString($"NearObjectsCount = {objCount}", index);
@@ -1139,7 +1149,7 @@ public partial class WorldClient
         }
     }
 
-    public void ReadFarObjectsBlock(WorldPacket packet, UpdateObject updateObject, object index)
+    public void ReadFarObjectsBlock(WorldPacket packet, UpdateObject updateObject, int index)
     {
         var objCount = packet.ReadInt32();
         PrintString($"FarObjectsCount = {objCount}", index);
@@ -1218,7 +1228,7 @@ public partial class WorldClient
         return false;
     }
 
-    private void ReadCreateObjectBlock(WorldPacket packet, ref WowGuid128 guid, ObjectUpdate updateData, AuraUpdate auraUpdate, object index)
+    private void ReadCreateObjectBlock(WorldPacket packet, ref WowGuid128 guid, ObjectUpdate updateData, AuraUpdate auraUpdate, int index)
     {
         updateData.CreateData.ObjectType = ObjectTypeConverter.Convert((ObjectTypeLegacy)packet.ReadUInt8());
         GetSession().GameState.StoreOriginalObjectType(guid, updateData.CreateData.ObjectType);
@@ -1226,7 +1236,7 @@ public partial class WorldClient
         ReadValuesUpdateBlockOnCreate(packet, ref guid, updateData.CreateData.ObjectType, updateData, auraUpdate, index);
     }
 
-    public void ReadValuesUpdateBlockOnCreate(WorldPacket packet, ref WowGuid128 guid, ObjectType type, ObjectUpdate updateData, AuraUpdate auraUpdate, object index)
+    public void ReadValuesUpdateBlockOnCreate(WorldPacket packet, ref WowGuid128 guid, ObjectType type, ObjectUpdate updateData, AuraUpdate auraUpdate, int index)
     {
         BitArray? updateMaskArray = null;
         var updates = ReadValuesUpdateBlock(packet, ref type, index, true, null, out updateMaskArray, out var actuallyChangedValuesMaskArray);
@@ -1282,7 +1292,19 @@ public partial class WorldClient
     /// </summary>
     internal static BitArray BuildUpdateMask(ReadOnlySpan<int> words, int length)
     {
-        var mask = new BitArray(Math.Max(length, words.Length * 32));
+        var mask = new BitArray(0);
+        FillUpdateMask(mask, words, length);
+        return mask;
+    }
+
+    /// <summary>
+    /// <see cref="BuildUpdateMask"/> into an existing BitArray, which ends up exactly as a fresh
+    /// one would: resized, cleared, then the words' bits set.
+    /// </summary>
+    internal static void FillUpdateMask(BitArray mask, ReadOnlySpan<int> words, int length)
+    {
+        mask.Length = Math.Max(length, words.Length * 32);
+        mask.SetAll(false);
         for (int w = 0; w < words.Length; w++)
         {
             uint word = (uint)words[w];
@@ -1292,8 +1314,14 @@ public partial class WorldClient
                 word &= word - 1;
             }
         }
-        return mask;
     }
+
+    // Refilled for every Values block this client reads, instead of two fresh BitArrays per block
+    // (21 MB over an 18-minute Alterac Valley). Safe because each block's masks are consumed by
+    // StoreObjectUpdate before the next block is read, nothing keeps a reference to either, and a
+    // session runs one handler at a time.
+    private readonly BitArray _updateMaskScratch = new(0);
+    private readonly BitArray _changedMaskScratch = new(0);
 
     [System.Diagnostics.Conditional("DEBUG_UPDATES")]
     private void PrintValue<T>(string name, T obj, params object[] indexes)
@@ -1303,7 +1331,7 @@ public partial class WorldClient
 #endif
     }
 
-    private Dictionary<int, UpdateField> ReadValuesUpdateBlock(WorldPacket packet, ref ObjectType type, object index, bool isCreating, Dictionary<int, UpdateField>? oldValues, out BitArray outUpdateMaskArray, out BitArray outActuallyChangedValuesMaskArray)
+    private Dictionary<int, UpdateField> ReadValuesUpdateBlock(WorldPacket packet, ref ObjectType type, int index, bool isCreating, Dictionary<int, UpdateField>? oldValues, out BitArray outUpdateMaskArray, out BitArray outActuallyChangedValuesMaskArray)
     {
         bool missingCreateObject = !isCreating && oldValues == null;
         var maskSize = packet.ReadUInt8();
@@ -1367,13 +1395,14 @@ public partial class WorldClient
             maskLength = Math.Max(maskBits, objectFieldEnd);
         }
 
-        // Built once at its final length. BitArray(int[]) copied a throwaway int[], and widening it
-        // afterwards through mask.Length reallocated it a second time.
-        var mask = BuildUpdateMask(maskWords, maskLength);
+        var mask = _updateMaskScratch;
+        FillUpdateMask(mask, maskWords, maskLength);
         outUpdateMaskArray = mask;
         // All-false at maskSize * 32 bits, which is what BitArray(new int[maskSize]) produced. The
         // in-range check in the write-back relies on that length, so it is deliberately not widened.
-        outActuallyChangedValuesMaskArray = new BitArray(maskBits);
+        _changedMaskScratch.Length = maskBits;
+        _changedMaskScratch.SetAll(false);
+        outActuallyChangedValuesMaskArray = _changedMaskScratch;
         // A create starts this object's field cache from empty; sizing it for the fields the mask
         // carries avoids growing it through every intermediate capacity on the way there.
         var dict = oldValues ?? new Dictionary<int, UpdateField>(setBits);
@@ -1686,12 +1715,12 @@ public partial class WorldClient
     }
 
     // Overload for WowGuid64 - converts to WowGuid128
-    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid64 guid, ObjectUpdate? updateData, object index)
+    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid64 guid, ObjectUpdate? updateData, int index)
     {
         ReadMovementUpdateBlock(packet, guid.To128(GetSession().GameState), updateData, index);
     }
 
-    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid128 guid, ObjectUpdate? updateData, object index)
+    void ReadMovementUpdateBlock(WorldPacket packet, WowGuid128 guid, ObjectUpdate? updateData, int index)
     {
         MovementInfo? moveInfo = null;
 
@@ -1744,7 +1773,7 @@ public partial class WorldClient
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 moveInfo.PitchRate = packet.ReadFloat();
 
-            if (moveFlags.HasAnyFlag(MovementFlagWotLK.SplineEnabled))
+            if (moveFlags.HasAnyFlag((uint)MovementFlagWotLK.SplineEnabled))
             {
                 moveInfo.HasSplineData = true;
                 ServerSideMovement monsterMove = new ServerSideMovement();
@@ -1760,7 +1789,7 @@ public partial class WorldClient
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 {
                     SplineFlagWotLK splineFlags = (SplineFlagWotLK)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagWotLK, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1784,7 +1813,7 @@ public partial class WorldClient
                 else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     SplineFlagTBC splineFlags = (SplineFlagTBC)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagTBC, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1808,7 +1837,7 @@ public partial class WorldClient
                 else
                 {
                     SplineFlagVanilla splineFlags = (SplineFlagVanilla)packet.ReadUInt32();
-                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagModern>();
+                    monsterMove.SplineFlags = splineFlags.CastFlags<SplineFlagVanilla, SplineFlagModern>();
                     isFlyingSpline = SplineFlagTranslation.IsServerFlight(splineFlags);
                     isSmoothSpline = SplineFlagTranslation.IsSmoothPath(splineFlags);
 
@@ -1964,7 +1993,7 @@ public partial class WorldClient
 
         if (updateData != null && moveInfo != null)
         {
-            moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+            moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagWotLK, MovementFlagModern>());
             moveInfo.ValidateMovementInfo();
             updateData.CreateData.MoveInfo = moveInfo;
         }
@@ -2320,16 +2349,16 @@ public partial class WorldClient
         int UNIT_FIELD_FLAGS = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS);
         if (UNIT_FIELD_FLAGS >= 0 && updates.ContainsKey(UNIT_FIELD_FLAGS))
         {
-            if (updates[UNIT_FIELD_FLAGS].UInt32Value.HasAnyFlag(UnitFlags.Pvp))
+            if (updates[UNIT_FIELD_FLAGS].UInt32Value.HasAnyFlag((uint)UnitFlags.Pvp))
                 flags |= (byte)PvPFlags.PvP;
         }
 
         int PLAYER_FLAGS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FLAGS);
         if (PLAYER_FLAGS >= 0 && updates.ContainsKey(PLAYER_FLAGS))
         {
-            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag(PlayerFlagsLegacy.FreeForAllPvP))
+            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag((uint)PlayerFlagsLegacy.FreeForAllPvP))
                 flags |= (byte)PvPFlags.FFAPvp;
-            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag(PlayerFlagsLegacy.Sanctuary))
+            if (updates[PLAYER_FLAGS].UInt32Value.HasAnyFlag((uint)PlayerFlagsLegacy.Sanctuary))
                 flags |= (byte)PvPFlags.Sanctuary;
         }
 
@@ -2644,7 +2673,10 @@ public partial class WorldClient
             {
                 int sizePerEntry = 3;
 
-                Func<int, ItemEnchantment?> ReadEnchantData = delegate (int slot)
+                // A local function, not a delegate: a delegate's closure captured this method's
+                // parameters, and captured parameters are hoisted at method entry, so every call -
+                // every creature and player block, not just items - allocated it.
+                ItemEnchantment? ReadEnchantData(int slot)
                 {
                     ItemEnchantment? enchantment = null;
                     int idIndex = ITEM_FIELD_ENCHANTMENT + slot * sizePerEntry;
@@ -2672,7 +2704,7 @@ public partial class WorldClient
                         enchantment.Charges = (ushort)updates[chargesIndex].UInt32Value;
                     }
                     return enchantment;
-                };
+                }
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
@@ -2883,7 +2915,7 @@ public partial class WorldClient
                     // Pre-WotLK carries no arena team on the wire, so fall back to race.
                     // From WotLK on it comes from PLAYER_BYTES_3 byte 3 and guessing here
                     // would overwrite the real value with "everyone is on my team".
-                    updateData.PlayerData.ArenaFaction = (byte)(GameData.IsAllianceRace((Race)updateData.UnitData.RaceId) ? 1 : 0);
+                    updateData.EnsurePlayerData().ArenaFaction = (byte)(GameData.IsAllianceRace((Race)updateData.UnitData.RaceId) ? 1 : 0);
                 }
 
                 if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
@@ -2987,7 +3019,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     UnitFlagsVanilla vanillaFlags = (UnitFlagsVanilla)updates[UNIT_FIELD_FLAGS].UInt32Value;
-                    updateData.UnitData.Flags = (uint)(vanillaFlags.CastFlags<UnitFlags>());
+                    updateData.UnitData.Flags = (uint)(vanillaFlags.CastFlags<UnitFlagsVanilla, UnitFlags>());
 
                     if (vanillaFlags.HasAnyFlag(UnitFlagsVanilla.PetRename))
                     {
@@ -3011,7 +3043,7 @@ public partial class WorldClient
 
                 // Here because of this bullshit in cmangos:
                 // https://github.com/cmangos/mangos-tbc/blob/fd093b33071b546545cc5973608304bccc5a041b/src/game/Entities/Object.cpp#L544
-                if (updateData.UnitData.Flags.HasAnyFlag(UnitFlags.ServerControlled) && isCreate &&
+                if (updateData.UnitData.Flags.GetValueOrDefault().HasAnyFlag((uint)UnitFlags.ServerControlled) && isCreate &&
                     guid == GetSession().GameState.CurrentPlayerGuid && updateData.CreateData.MoveSpline == null)
                     updateData.UnitData.Flags &= ~(uint)UnitFlags.ServerControlled;
 
@@ -3031,7 +3063,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     guid == GetSession().GameState.CurrentPlayerGuid &&
                     GetSession().GameState.IsInTaxiFlight &&
-                    !updateData.UnitData.Flags.HasAnyFlag(UnitFlags.TaxiFlight))
+                    !updateData.UnitData.Flags.GetValueOrDefault().HasAnyFlag((uint)UnitFlags.TaxiFlight))
                 {
                     ControlUpdate control = new ControlUpdate();
                     control.Guid = guid;
@@ -3162,7 +3194,7 @@ public partial class WorldClient
                 UnitDynamicFlagsLegacy flags = (UnitDynamicFlagsLegacy)(updates[UNIT_DYNAMIC_FLAGS].UInt32Value);
                 if (flags.HasFlag(UnitDynamicFlagsLegacy.Tapped) && flags.HasFlag(UnitDynamicFlagsLegacy.TappedByPlayer))
                     flags &= ~(UnitDynamicFlagsLegacy.Tapped | UnitDynamicFlagsLegacy.TappedByPlayer);
-                updateData.ObjectData.DynamicFlags = (uint)flags.CastFlags<UnitDynamicFlagsModern>();
+                updateData.ObjectData.DynamicFlags = (uint)flags.CastFlags<UnitDynamicFlagsLegacy, UnitDynamicFlagsModern>();
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
@@ -3210,7 +3242,7 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     NPCFlagsVanilla vanillaFlags = (NPCFlagsVanilla)updates[UNIT_NPC_FLAGS].UInt32Value;
-                    updateData.UnitData.EnsureNpcFlags()[0] = (uint)(vanillaFlags.CastFlags<NPCFlags>());
+                    updateData.UnitData.EnsureNpcFlags()[0] = (uint)(vanillaFlags.CastFlags<NPCFlagsVanilla, NPCFlags>());
                 }
                 else
                 {
@@ -3434,23 +3466,23 @@ public partial class WorldClient
             int PLAYER_DUEL_ARBITER = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DUEL_ARBITER);
             if (PLAYER_DUEL_ARBITER >= 0 && updateMaskArray[PLAYER_DUEL_ARBITER])
             {
-                updateData.PlayerData.DuelArbiter = GetGuidValue(updates, PlayerField.PLAYER_DUEL_ARBITER).To128(GetSession().GameState);
+                updateData.EnsurePlayerData().DuelArbiter = GetGuidValue(updates, PlayerField.PLAYER_DUEL_ARBITER).To128(GetSession().GameState);
             }
             int PLAYER_FLAGS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FLAGS);
             if (PLAYER_FLAGS >= 0 && updateMaskArray[PLAYER_FLAGS])
             {
                 PlayerFlagsLegacy legacyFlags = (PlayerFlagsLegacy)updates[PLAYER_FLAGS].UInt32Value;
-                var flags = legacyFlags.CastFlags<PlayerFlags>();
+                var flags = legacyFlags.CastFlags<PlayerFlagsLegacy, PlayerFlags>();
                 if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
                     GetSession().GameState.CurrentPlayerStorage.Settings.PatchFlags(ref flags); // Some patches like auto guild inv decline
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.EnsurePlayerData().PlayerFlags = (uint) flags;
 
-                if (updateData.PlayerData.PlayerFlagsEx == null)
-                    updateData.PlayerData.PlayerFlagsEx = 0;
+                if (updateData.EnsurePlayerData().PlayerFlagsEx == null)
+                    updateData.EnsurePlayerData().PlayerFlagsEx = 0;
                 if (legacyFlags.HasAnyFlag(PlayerFlagsLegacy.HideHelm))
-                    updateData.PlayerData.PlayerFlagsEx |= (uint)PlayerFlagsEx.HideHelm;
+                    updateData.EnsurePlayerData().PlayerFlagsEx |= (uint)PlayerFlagsEx.HideHelm;
                 if (legacyFlags.HasAnyFlag(PlayerFlagsLegacy.HideCloak))
-                    updateData.PlayerData.PlayerFlagsEx |= (uint)PlayerFlagsEx.HideCloak;
+                    updateData.EnsurePlayerData().PlayerFlagsEx |= (uint)PlayerFlagsEx.HideCloak;
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     updateData.UnitData.PvpFlags == null)
@@ -3459,7 +3491,7 @@ public partial class WorldClient
             else if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid && (GetSession().GameState.CurrentPlayerStorage.Settings?.NeedToForcePatchFlags ?? false))
             { // If we did not patch the PlayerFlags the first time, we need to force include the field
                 PlayerFlags flags = GetSession().GameState.CurrentPlayerStorage.Settings.CreateNewFlags();
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.EnsurePlayerData().PlayerFlags = (uint) flags;
             }
 
             if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
@@ -3474,13 +3506,13 @@ public partial class WorldClient
             int PLAYER_GUILDRANK = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILDRANK);
             if (PLAYER_GUILDRANK >= 0 && updateMaskArray[PLAYER_GUILDRANK])
             {
-                updateData.PlayerData.GuildLevel = 25;
-                updateData.PlayerData.GuildRankID = updates[PLAYER_GUILDRANK].UInt32Value;
+                updateData.EnsurePlayerData().GuildLevel = 25;
+                updateData.EnsurePlayerData().GuildRankID = updates[PLAYER_GUILDRANK].UInt32Value;
             }
             int PLAYER_GUILD_TIMESTAMP = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILD_TIMESTAMP);
             if (PLAYER_GUILD_TIMESTAMP >= 0 && updateMaskArray[PLAYER_GUILD_TIMESTAMP])
             {
-                updateData.PlayerData.GuildTimeStamp = updates[PLAYER_GUILD_TIMESTAMP].Int32Value;
+                updateData.EnsurePlayerData().GuildTimeStamp = updates[PLAYER_GUILD_TIMESTAMP].Int32Value;
             }
             int PLAYER_QUEST_LOG_1_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_QUEST_LOG_1_1);
             if (PLAYER_QUEST_LOG_1_1 >= 0)
@@ -3494,14 +3526,18 @@ public partial class WorldClient
                 int questsCount = LegacyVersion.GetQuestLogSize();
                 for (int i = 0; i < questsCount; i++)
                 {
+                    // Only a slot the update carries materialises the array. Storing null into a
+                    // fresh one changed nothing a reader can see, but it allocated the whole log
+                    // for every player update in view, quest fields or not.
                     QuestLog? entry = ReadQuestLogEntry(i, updateMaskArray, updates);
-                    updateData.PlayerData.EnsureQuestLog()[i] = entry!;
+                    if (entry != null)
+                        updateData.EnsurePlayerData().EnsureQuestLog()[i] = entry;
                 }
             }
             int PLAYER_CHOSEN_TITLE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHOSEN_TITLE);
             if (PLAYER_CHOSEN_TITLE >= 0 && updateMaskArray[PLAYER_CHOSEN_TITLE])
             {
-                updateData.PlayerData.ChosenTitle = updates[PLAYER_CHOSEN_TITLE].Int32Value;
+                updateData.EnsurePlayerData().ChosenTitle = updates[PLAYER_CHOSEN_TITLE].Int32Value;
             }
             int PLAYER_VISIBLE_ITEM_1_0 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_VISIBLE_ITEM_1_0);
             if (PLAYER_VISIBLE_ITEM_1_0 >= 0) // vanilla and tbc
@@ -3521,7 +3557,7 @@ public partial class WorldClient
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[tempEnchantIndex].UInt32Value);
                         if (itemVisual == 0 && updates.ContainsKey(permEnchantIndex))
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[permEnchantIndex].UInt32Value);
-                        updateData.PlayerData.EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
+                        updateData.EnsurePlayerData().EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
                     }
                 }
             }
@@ -3542,7 +3578,7 @@ public partial class WorldClient
                         ushort itemVisual = updates.ContainsKey(enchantIndex)
                             ? (ushort)GameData.GetItemEnchantVisual(updates[enchantIndex].UInt32Value)
                             : (ushort)0;
-                        updateData.PlayerData.EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
+                        updateData.EnsurePlayerData().EnsureVisibleItems()[i] = new VisibleItem(itemId, 0, itemVisual);
                     }
                 }
             }
@@ -3653,7 +3689,7 @@ public partial class WorldClient
             if (PLAYER_BYTES_2 >= 0 && updateMaskArray[PLAYER_BYTES_2])
             {
                 facialHair = (byte)(updates[PLAYER_BYTES_2].UInt32Value & 0xFF);
-                updateData.PlayerData.NumBankSlots = (byte)((updates[PLAYER_BYTES_2].UInt32Value >> 16) & 0xFF);
+                updateData.EnsurePlayerData().NumBankSlots = (byte)((updates[PLAYER_BYTES_2].UInt32Value >> 16) & 0xFF);
 
                 if (restInfo == null && guid == GetSession().GameState.CurrentPlayerGuid)
                     restInfo = new RestInfo();
@@ -3709,13 +3745,13 @@ public partial class WorldClient
                     var customizations = CharacterCustomizations.ConvertLegacyCustomizationsToModern(raceId, sexId, (byte)skin, (byte)face, (byte)hairStyle, (byte)hairColor, (byte)facialHair);
                     for (int i = 0; i < 5; i++)
                     {
-                        updateData.PlayerData.EnsureCustomizations()[i] = customizations[i];
+                        updateData.EnsurePlayerData().EnsureCustomizations()[i] = customizations[i];
                     }
 
                     // Create writes customizations unconditionally; a Values delta only carries
                     // them when they changed, so flag it here for the dynamic-field writer.
                     if (!isCreate)
-                        updateData.PlayerData.HasCustomizationsUpdate = true;
+                        updateData.EnsurePlayerData().HasCustomizationsUpdate = true;
                 }
             }
 
@@ -3735,9 +3771,9 @@ public partial class WorldClient
             if (PLAYER_BYTES_3 >= 0 && updateMaskArray[PLAYER_BYTES_3])
             {
                 ushort genderAndInebriation = (ushort)(updates[PLAYER_BYTES_3].UInt32Value & 0xFFFF);
-                updateData.PlayerData.NativeSex = (byte)(genderAndInebriation & 0x1);
-                updateData.PlayerData.Inebriation = (byte)(genderAndInebriation & 0xFFFE);
-                updateData.PlayerData.PvpTitle = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 16) & 0xFF); // city protector
+                updateData.EnsurePlayerData().NativeSex = (byte)(genderAndInebriation & 0x1);
+                updateData.EnsurePlayerData().Inebriation = (byte)(genderAndInebriation & 0xFFFE);
+                updateData.EnsurePlayerData().PvpTitle = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 16) & 0xFF); // city protector
                 byte playerBytes3High = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 24) & 0xFF);
                 // Byte 3 changed meaning when PvP ranks were removed. Vanilla/TBC keep the
                 // honor rank there; WotLK reuses it as the arena team (TC
@@ -3745,14 +3781,14 @@ public partial class WorldClient
                 // both corrupts PvPRank and leaves ArenaFaction guessed from race, so every
                 // player in a skirmish renders on the same team.
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
-                    updateData.PlayerData.ArenaFaction = playerBytes3High;
+                    updateData.EnsurePlayerData().ArenaFaction = playerBytes3High;
                 else
-                    updateData.PlayerData.PvPRank = playerBytes3High; // honor rank
+                    updateData.EnsurePlayerData().PvPRank = playerBytes3High; // honor rank
             }
             int PLAYER_DUEL_TEAM = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DUEL_TEAM);
             if (PLAYER_DUEL_TEAM >= 0 && updateMaskArray[PLAYER_DUEL_TEAM])
             {
-                updateData.PlayerData.DuelTeam = updates[PLAYER_DUEL_TEAM].UInt32Value;
+                updateData.EnsurePlayerData().DuelTeam = updates[PLAYER_DUEL_TEAM].UInt32Value;
             }
             int PLAYER_FARSIGHT = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FARSIGHT);
             if (PLAYER_FARSIGHT >= 0 && updateMaskArray[PLAYER_FARSIGHT])
@@ -4778,13 +4814,12 @@ public partial class WorldClient
                 // GameObject.cpp:2835-2838 writes uint16 dynFlags then int16 pathProgress),
                 // so carry them across verbatim instead of losing them to the remap.
                 GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)(effectiveLegacyRaw & 0x0000FFFFu);
-                uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsModern>();
+                uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsLegacy, GameObjectDynamicFlagsModern>();
                 uint preservedHigh = isTransport ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
                 updateData.ObjectData.DynamicFlags = (oldValue | preservedHigh | newLow);
-                Log.Print(LogType.Trace,
-                    $"[Trace][GO DYN_FLAGS] guid={guid} entry={updateData.ObjectData.EntryID} " +
-                    $"legacyRaw=0x{legacyRaw:X8} effective=0x{effectiveLegacyRaw:X8} ({flags}) " +
-                    $"-> modernLow=0x{newLow:X8} high=0x{preservedHigh:X8}, oldDyn=0x{oldValue:X8} oldDynSource={oldDynSource}, finalDyn=0x{updateData.ObjectData.DynamicFlags.Value:X8}");
+                UpdateHandlerLogMessages.GameObjectDynamicFlags(_melUpdateValues, guid.Low, guid.High,
+                    updateData.ObjectData.EntryID, legacyRaw, effectiveLegacyRaw, flags, newLow, preservedHigh,
+                    oldValue, oldDynSource, updateData.ObjectData.DynamicFlags.Value);
             }
             int GAMEOBJECT_FACTION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_FACTION);
             if (GAMEOBJECT_FACTION >= 0 && updateMaskArray[GAMEOBJECT_FACTION])
@@ -4909,12 +4944,12 @@ public partial class WorldClient
                 updateData.CorpseData.Flags = updates[CORPSE_FIELD_FLAGS].UInt32Value;
 
                 // These flags have a different meaning in modern client.
-                if (updateData.CorpseData.Flags.HasAnyFlag(CorpseFlags.HideHelm))
+                if (updateData.CorpseData.Flags.GetValueOrDefault().HasAnyFlag((uint)CorpseFlags.HideHelm))
                 {
                     updateData.CorpseData.Flags &= ~(uint)CorpseFlags.HideHelm;
                     updateData.CorpseData.Items[EquipmentSlot.Head] = null;
                 }
-                if (updateData.CorpseData.Flags.HasAnyFlag(CorpseFlags.HideCloak))
+                if (updateData.CorpseData.Flags.GetValueOrDefault().HasAnyFlag((uint)CorpseFlags.HideCloak))
                 {
                     updateData.CorpseData.Flags &= ~(uint)CorpseFlags.HideCloak;
                     updateData.CorpseData.Items[EquipmentSlot.Cloak] = null;

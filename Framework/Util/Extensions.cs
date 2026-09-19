@@ -131,18 +131,29 @@ public static partial class Extensions
         return result;
     }
 
-    /// <summary>
-    /// Returns true if flag exists in value (&)
-    /// </summary>
-    /// <param name="value">An enum, int, ...</param>
-    /// <param name="flag">An enum, int, ...</param>
-    /// <returns>A boolean</returns>
-    public static bool HasAnyFlag(this IConvertible value, IConvertible flag)
-    {
-        var uFlag = flag.ToUInt64(null);
-        var uThis = value.ToUInt64(null);
+    // Returns true if value and flag share any bit.
+    //
+    // Both sides must have the same type. The overload these replaced took IConvertible, which
+    // boxed both arguments and, for an enum, boxed the underlying value again inside ToUInt64:
+    // four allocations per check. The V3_4_3 update writer alone makes nine checks per object,
+    // three times over, which put it at 14% of all proxy allocation. It is gone rather than kept
+    // as a fallback, so a check that mixes types (a uint field against an enum constant) fails to
+    // compile instead of quietly boxing: cast the constant to the field's type.
+    //
+    // One difference from the old overload: ToUInt64 threw OverflowException for a negative
+    // signed value, these compare the bits.
 
-        return (uThis & uFlag) != 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag<T>(this T value, T flag) where T : struct, Enum
+    {
+        // SizeOf is a JIT-time constant, so only one branch survives per enum.
+        if (Unsafe.SizeOf<T>() == sizeof(byte))
+            return (Unsafe.As<T, byte>(ref value) & Unsafe.As<T, byte>(ref flag)) != 0;
+        if (Unsafe.SizeOf<T>() == sizeof(ushort))
+            return (Unsafe.As<T, ushort>(ref value) & Unsafe.As<T, ushort>(ref flag)) != 0;
+        if (Unsafe.SizeOf<T>() == sizeof(uint))
+            return (Unsafe.As<T, uint>(ref value) & Unsafe.As<T, uint>(ref flag)) != 0;
+        return (Unsafe.As<T, ulong>(ref value) & Unsafe.As<T, ulong>(ref flag)) != 0;
     }
 
     public static string ToHexString(this byte[] byteArray, bool reverse = false)
@@ -317,6 +328,17 @@ public static partial class Extensions
     {
         return FlagMappingCache.ConvertSingle<TTarget>(input);
     }
+
+    /// <summary>
+    /// <see cref="CastFlags{TTarget}(Enum)"/> without the box: the <c>Enum</c> receiver there boxes
+    /// the value on every call, and the mapping is looked up by type pair each time. Here both
+    /// are resolved once per pair. For per-packet call sites; the result is identical.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static TTarget CastFlags<TSource, TTarget>(this TSource input)
+        where TSource : struct, Enum
+        where TTarget : struct, Enum
+        => FlagMap<TSource, TTarget>.Convert(input);
 }
 
 internal static class FlagMappingCache
@@ -396,11 +418,101 @@ internal static class FlagMappingCache
         return result;
     }
 
+    internal static Dictionary<ulong, ulong> GetMapping(Type sourceType, Type targetType)
+        => _cache.GetOrAdd((sourceType, targetType), static key => BuildMapping(key.Item1, key.Item2));
+
+    // Unboxes the underlying value straight out of the already-boxed enum. Convert.ToUInt64 went
+    // through IConvertible, which boxed that value a second time on every call; movement and unit
+    // flags pass through here per packet. Checked, so a negative value still throws the
+    // OverflowException Convert.ToUInt64 threw.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong ToUInt64(Enum value)
+    private static ulong ToUInt64(Enum value) => value.GetTypeCode() switch
     {
-        return System.Convert.ToUInt64(value);
+        TypeCode.Byte => (byte)(object)value,
+        TypeCode.UInt16 => (ushort)(object)value,
+        TypeCode.UInt32 => (uint)(object)value,
+        TypeCode.UInt64 => (ulong)(object)value,
+        TypeCode.SByte => checked((ulong)(sbyte)(object)value),
+        TypeCode.Int16 => checked((ulong)(short)(object)value),
+        TypeCode.Int32 => checked((ulong)(int)(object)value),
+        TypeCode.Int64 => checked((ulong)(long)(object)value),
+        _ => System.Convert.ToUInt64(value),
+    };
+}
+
+/// <summary>
+/// The name-matched mapping <see cref="FlagMappingCache"/> builds, held per type pair so a call
+/// needs neither the cache lookup nor a boxed source.
+/// </summary>
+internal static class FlagMap<TSource, TTarget>
+    where TSource : struct, Enum
+    where TTarget : struct, Enum
+{
+    private static readonly Dictionary<ulong, ulong> Mapping =
+        FlagMappingCache.GetMapping(typeof(TSource), typeof(TTarget));
+
+    private static readonly KeyValuePair<ulong, ulong>[] Bits = [.. Mapping.Where(kv => kv.Key != 0)];
+
+    // An enum's type code is its underlying type's; readonly, so tier-1 folds the switch below.
+    private static readonly TypeCode SourceCode = Type.GetTypeCode(typeof(TSource));
+
+    public static TTarget Convert(TSource source)
+    {
+        ulong value = ToUInt64(source);
+
+        if (Mapping.TryGetValue(value, out ulong direct))
+            return Unsafe.As<ulong, TTarget>(ref direct);
+
+        ulong result = 0;
+        foreach (var (key, target) in Bits)
+        {
+            if ((value & key) == key)
+                result |= target;
+        }
+        return Unsafe.As<ulong, TTarget>(ref result);
     }
+
+    // Same conversion as FlagMappingCache.ToUInt64, read straight from the value: checked, so a
+    // negative signed value throws where Convert.ToUInt64 did.
+    private static ulong ToUInt64(TSource v) => SourceCode switch
+    {
+        TypeCode.Byte => Unsafe.As<TSource, byte>(ref v),
+        TypeCode.UInt16 => Unsafe.As<TSource, ushort>(ref v),
+        TypeCode.UInt32 => Unsafe.As<TSource, uint>(ref v),
+        TypeCode.UInt64 => Unsafe.As<TSource, ulong>(ref v),
+        TypeCode.SByte => checked((ulong)Unsafe.As<TSource, sbyte>(ref v)),
+        TypeCode.Int16 => checked((ulong)Unsafe.As<TSource, short>(ref v)),
+        TypeCode.Int32 => checked((ulong)Unsafe.As<TSource, int>(ref v)),
+        _ => checked((ulong)Unsafe.As<TSource, long>(ref v)),
+    };
+}
+
+/// <summary>
+/// Flag tests and edits for any integer type, so a class holding flags in an integer field does
+/// not hand-roll its own Has/Add/Remove. The enum overload of <c>HasAnyFlag</c> lives in
+/// <see cref="Extensions"/>; a separate class because the two differ only by constraint.
+/// </summary>
+/// <remarks>
+/// Both sides must have the same type, as with the enum overload: cast an enum constant to the
+/// field's type rather than widening the field.
+/// </remarks>
+public static class IntegerFlagExtensions
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAnyFlag<T>(this T value, T flag) where T : struct, IBinaryInteger<T>
+        => (value & flag) != T.Zero;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasAllFlags<T>(this T value, T flags) where T : struct, IBinaryInteger<T>
+        => (value & flags) == flags;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void AddFlag<T>(ref this T value, T flag) where T : struct, IBinaryInteger<T>
+        => value |= flag;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void RemoveFlag<T>(ref this T value, T flag) where T : struct, IBinaryInteger<T>
+        => value &= ~flag;
 }
 
 // Re-open Extensions class for remaining methods

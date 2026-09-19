@@ -115,12 +115,13 @@ partial class Server
         }
     }
 
-    internal static string ResolveOpcodeName(int opcode)
-    {
-        if (Enum.IsDefined(typeof(Opcode), (uint)opcode))
-            return ((Opcode)opcode).ToString();
-        return $"0x{opcode:X4}";
-    }
+    // Every metrics summary names each of its opcode rows, and a value's name never changes, so
+    // each is resolved once. Enum.IsDefined boxed the value, and the name table ToString reads
+    // does not survive a GC, so a summary a minute after the last one rebuilt all of it.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _opcodeNames = new();
+
+    internal static string ResolveOpcodeName(int opcode) => _opcodeNames.GetOrAdd(opcode, static op =>
+        Enum.IsDefined(typeof(Opcode), (uint)op) ? ((Opcode)op).ToString() : $"0x{op:X4}");
 
     private static readonly string? _buildTag = null;
     #pragma warning disable CS0162 // GitVersion constants vary per build environment

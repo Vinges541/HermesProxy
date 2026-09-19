@@ -179,7 +179,7 @@ public class ObjectUpdateConstructorTests
     }
 
     [Fact]
-    public void Constructor_PlayerGuid_InitializesUnitAndPlayerDataButNotActivePlayerData()
+    public void Constructor_PlayerGuid_InitializesUnitDataButNotPlayerOrActivePlayerData()
     {
         var guid = WowGuid128.Create(HighGuidType703.Player, 1);
         var session = CreateGlobalSession();
@@ -187,11 +187,27 @@ public class ObjectUpdateConstructorTests
         var update = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
 
         Assert.NotNull(update.UnitData);
-        Assert.NotNull(update.PlayerData);
+        // A player's Values block almost never carries a player-section field (under 2% in an AV
+        // sniff), so PlayerData waits for the first one to be written.
+        Assert.Null(update.PlayerData);
         // ActivePlayerData is owner-only and ~32 KB, so the ctor leaves it null. Every other
         // player in view -- every bot in a battleground -- would otherwise allocate a block
         // the wire never carries.
         Assert.Null(update.ActivePlayerData);
+    }
+
+    [Fact]
+    public void EnsurePlayerData_MaterialisesOnceAndIsIdempotent()
+    {
+        var guid = WowGuid128.Create(HighGuidType703.Player, 1);
+        var session = CreateGlobalSession();
+
+        var update = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
+
+        var first = update.EnsurePlayerData();
+        Assert.NotNull(first);
+        Assert.Same(first, update.PlayerData);
+        Assert.Same(first, update.EnsurePlayerData());
     }
 
     [Fact]

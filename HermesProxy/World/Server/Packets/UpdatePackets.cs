@@ -75,7 +75,10 @@ public class ObjectUpdate
             case ObjectType.Player:
             case ObjectType.ActivePlayer:
                 UnitData = new UnitData();
-                PlayerData = new PlayerData();
+                // PlayerData is not allocated here either. A 3.3.5a core puts a player-section field
+                // in under 2% of a player's Values blocks (AV sniff, 2026-09-19: 966 of 54,288), and
+                // the rest are health, power and target, so nearly every allocation was discarded
+                // unused. EnsurePlayerData() materialises it on the first player field written.
                 // ActivePlayerData is deliberately not allocated here. It is owner-only data
                 // (~32 KB of nullable arrays, QuestCompleted[875] alone being 14 KB), and a
                 // 3.3.5a core never sends owner-only fields for a foreign player, so every
@@ -109,6 +112,13 @@ public class ObjectUpdate
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ContainerData EnsureContainerData() => ContainerData ??= new ContainerData();
 
+    /// <summary>
+    /// Materialises <see cref="PlayerData"/> on demand. Call this from every write site; read
+    /// sites keep using the field, where null means no player field was sent.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PlayerData EnsurePlayerData() => PlayerData ??= new PlayerData();
+
     public UpdateTypeModern Type;
     public WowGuid128 Guid;
     public GlobalSessionData GlobalSession;
@@ -117,7 +127,7 @@ public class ObjectUpdate
     public ItemData ItemData = null!;
     public ContainerData? ContainerData;
     public UnitData UnitData = null!;
-    public PlayerData PlayerData = null!;
+    public PlayerData? PlayerData;
     public ActivePlayerData? ActivePlayerData;
     public GameObjectData GameObjectData = null!;
     /// <summary>
@@ -399,7 +409,7 @@ public class ObjectUpdate
                 CreateData.MoveInfo.TurnRate = 3.141594f;
             if (CreateData.MoveInfo.PitchRate == 0)
                 CreateData.MoveInfo.PitchRate = CreateData.MoveInfo.TurnRate;
-            if (CreateData.MoveInfo.Flags.HasAnyFlag(MovementFlagModern.WalkMode) && (CreateData.MoveSpline != null))
+            if (CreateData.MoveInfo.Flags.HasAnyFlag((uint)MovementFlagModern.WalkMode) && (CreateData.MoveSpline != null))
                 CreateData.MoveInfo.Flags &= ~(uint)MovementFlagModern.WalkMode;
             // CreateObject MoveInfo placeholder. `FlagsExtra = 512` is PreventChangePitch (0x200).
             // Required by all modern Classic clients (V1_14 / V2_5 / V3_4_3) so legacy-server-spawned
@@ -526,6 +536,10 @@ public class ObjectUpdate
                 Guid == GlobalSession.GameState.CurrentPlayerGuid)
                 UnitData.ChannelObject = WowGuid128.Empty;
         }
+        // A player create always carries these defaults. PlayerData is lazy, so a create whose
+        // player section happened to be empty would otherwise skip them.
+        if (Guid.GetObjectType() is ObjectType.Player or ObjectType.ActivePlayer)
+            EnsurePlayerData();
         if (PlayerData != null)
         {
             if (PlayerData.WowAccount == null)
@@ -641,52 +655,60 @@ public class UpdateObject : ServerPacket
                 else if (u.Guid == gameState.CurrentPetGuid)
                     gameState.ClientHasPetObject = true;
                 World.Logging.ObjectLifecycleLogMessages.CreateRegistered(
-                    _melObjLife, u.Guid.Low, u.Guid.High, u.Type.ToString());
+                    _melObjLife, u.Guid.Low, u.Guid.High, u.Type);
             }
         }
 
         int valuesKept = 0;
         int valuesUnknownStripped = 0;
         int valuesEmptyStripped = 0;
-        obj.ObjectUpdates.RemoveAll(u =>
-        {
-            if (u.Type != UpdateTypeModern.Values)
-                return false;
-            // The player's own Values are the one exception: at login the player's create can
-            // still be held for item templates (issue #34), and at a teleport the client is
-            // between SMSG_NEW_WORLD and the re-create. An update landing in either window
-            // carries real state — the stance a warrior logs in with, a mount's display id —
-            // and dropping it left the client with an empty action bar and no mount under the
-            // character (issue #300). SendUpdateBatch splits these out and holds them until the
-            // client has the player, so none of them reaches the wire ahead of the create.
-            if (!known.Contains(u.Guid) && u.Guid != gameState.CurrentPlayerGuid)
-            {
-                valuesUnknownStripped++;
-                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
-                    _melObjLife, u.Guid.Low, u.Guid.High, "unknown-guid");
-                return true;
-            }
-            // "Says nothing" is the writer's own question, so it is the writer's own answer:
-            // HasAnyValuesDelta runs the generated HasAny*FieldSet predicates over the same
-            // descriptor tree WriteValuesUpdate serializes from. A hand-written field list
-            // used to live here and answer it a second time; it covered a fraction of the
-            // tree, and every field added to a descriptor after it was written went missing
-            // in game instead of failing a build (issue #235).
-            if (!Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyValuesDelta(u, gameState))
-            {
-                valuesEmptyStripped++;
-                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
-                    _melObjLife, u.Guid.Low, u.Guid.High, "empty-delta");
-                return true;
-            }
-            valuesKept++;
-            World.Logging.ObjectLifecycleLogMessages.ValuesForwarded(
-                _melObjLife, u.Guid.Low, u.Guid.High, u.CorpseData != null, u.DynamicObjectData != null);
-            return false;
-        });
 
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            $"[UpdateObjectTrace] V3_4_3 filter: in={beforeCount} valuesKept={valuesKept} valuesEmpty={valuesEmptyStripped} valuesUnknown={valuesUnknownStripped} createKept={createKept} mapId={gameState.CurrentMapId}");
+        // Compacted in place rather than through RemoveAll, whose predicate captured this frame
+        // and allocated a closure and a delegate on every call - twice per batch.
+        var updates = obj.ObjectUpdates;
+        int keep = 0;
+        for (int i = 0; i < updates.Count; i++)
+        {
+            var u = updates[i];
+            if (u.Type == UpdateTypeModern.Values)
+            {
+                // The player's own Values are the one exception: at login the player's create can
+                // still be held for item templates (issue #34), and at a teleport the client is
+                // between SMSG_NEW_WORLD and the re-create. An update landing in either window
+                // carries real state — the stance a warrior logs in with, a mount's display id —
+                // and dropping it left the client with an empty action bar and no mount under the
+                // character (issue #300). SendUpdateBatch splits these out and holds them until the
+                // client has the player, so none of them reaches the wire ahead of the create.
+                if (!known.Contains(u.Guid) && u.Guid != gameState.CurrentPlayerGuid)
+                {
+                    valuesUnknownStripped++;
+                    World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                        _melObjLife, u.Guid.Low, u.Guid.High, "unknown-guid");
+                    continue;
+                }
+                // "Says nothing" is the writer's own question, so it is the writer's own answer:
+                // HasAnyValuesDelta runs the generated HasAny*FieldSet predicates over the same
+                // descriptor tree WriteValuesUpdate serializes from. A hand-written field list
+                // used to live here and answer it a second time; it covered a fraction of the
+                // tree, and every field added to a descriptor after it was written went missing
+                // in game instead of failing a build (issue #235).
+                if (!Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyValuesDelta(u, gameState))
+                {
+                    valuesEmptyStripped++;
+                    World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                        _melObjLife, u.Guid.Low, u.Guid.High, "empty-delta");
+                    continue;
+                }
+                valuesKept++;
+                World.Logging.ObjectLifecycleLogMessages.ValuesForwarded(
+                    _melObjLife, u.Guid.Low, u.Guid.High, u.CorpseData != null, u.DynamicObjectData != null);
+            }
+            updates[keep++] = u;
+        }
+        updates.RemoveRange(keep, updates.Count - keep);
+
+        World.Logging.ObjectLifecycleLogMessages.ValuesFilterSummary(
+            _melObjLife, beforeCount, valuesKept, valuesEmptyStripped, valuesUnknownStripped, createKept, gameState.CurrentMapId);
 
         return valuesUnknownStripped + valuesEmptyStripped;
     }
@@ -708,13 +730,15 @@ public class UpdateObject : ServerPacket
         {
             var unit = u.UnitData;
             if (unit == null) continue;
-            Reseat(ref unit.Summon,        gs, ref fixedCount, u.Guid, "Summon");
-            Reseat(ref unit.SummonedBy,    gs, ref fixedCount, u.Guid, "SummonedBy");
-            Reseat(ref unit.Charm,         gs, ref fixedCount, u.Guid, "Charm");
-            Reseat(ref unit.CharmedBy,     gs, ref fixedCount, u.Guid, "CharmedBy");
-            Reseat(ref unit.CreatedBy,     gs, ref fixedCount, u.Guid, "CreatedBy");
-            Reseat(ref unit.Target,        gs, ref fixedCount, u.Guid, "Target");
-            Reseat(ref unit.ChannelObject, gs, ref fixedCount, u.Guid, "ChannelObject");
+            // By value rather than by ref: most of these are UnitData properties backed by its
+            // rarely-used half, which a ref cannot reach.
+            unit.Summon        = Reseat(unit.Summon,        gs, ref fixedCount, u.Guid, "Summon");
+            unit.SummonedBy    = Reseat(unit.SummonedBy,    gs, ref fixedCount, u.Guid, "SummonedBy");
+            unit.Charm         = Reseat(unit.Charm,         gs, ref fixedCount, u.Guid, "Charm");
+            unit.CharmedBy     = Reseat(unit.CharmedBy,     gs, ref fixedCount, u.Guid, "CharmedBy");
+            unit.CreatedBy     = Reseat(unit.CreatedBy,     gs, ref fixedCount, u.Guid, "CreatedBy");
+            unit.Target        = Reseat(unit.Target,        gs, ref fixedCount, u.Guid, "Target");
+            unit.ChannelObject = Reseat(unit.ChannelObject, gs, ref fixedCount, u.Guid, "ChannelObject");
         }
         if (fixedCount > 0)
         {
@@ -723,17 +747,16 @@ public class UpdateObject : ServerPacket
         }
     }
 
-    private static void Reseat(ref WowGuid128? field, GameSessionData gs, ref int fixedCount, WowGuid128 ownerGuid, string fieldName)
+    private static WowGuid128? Reseat(WowGuid128? field, GameSessionData gs, ref int fixedCount, WowGuid128 ownerGuid, string fieldName)
     {
-        if (!field.HasValue) return;
+        if (!field.HasValue) return field;
         var corrected = gs.ResolveStalePetGuid(field.Value);
-        if (corrected.HasValue)
-        {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[ReseatStalePetGuids] owner={ownerGuid} field={fieldName} stale={field.Value} -> {corrected.Value}");
-            field = corrected.Value;
-            fixedCount++;
-        }
+        if (!corrected.HasValue) return field;
+
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[ReseatStalePetGuids] owner={ownerGuid} field={fieldName} stale={field.Value} -> {corrected.Value}");
+        fixedCount++;
+        return corrected.Value;
     }
 
     public override void Write()
@@ -750,7 +773,10 @@ public class UpdateObject : ServerPacket
         _worldPacket.WriteUInt32(NumObjUpdates);
         _worldPacket.WriteUInt16(MapID);
 
-        WorldPacket buffer = new();
+        // Both scratch buffers are disposed and spliced in as spans: they used to be left to the
+        // finalizer with their rentals, and the result was copied out through GetData twice
+        // before being copied into the packet a third time.
+        using WorldPacket buffer = new();
         if (buffer.WriteBit(!OutOfRangeGuids.Empty() || !DestroyedGuids.Empty()))
         {
             buffer.WriteUInt16((ushort)DestroyedGuids.Count);
@@ -763,7 +789,7 @@ public class UpdateObject : ServerPacket
                 buffer.WritePackedGuid128(outOfRangeGuid);
         }
 
-        WorldPacket data = new();
+        using WorldPacket data = new();
         foreach (var update in ObjectUpdates)
         {
             update.InitializePlaceholders();
@@ -804,18 +830,16 @@ public class UpdateObject : ServerPacket
             }
         }    
         
-        var bytes = data.GetData();
+        ReadOnlySpan<byte> bytes = data.GetDataSpan();
         buffer.WriteInt32(bytes.Length);
         buffer.WriteBytes(bytes);
-        Data = buffer.GetData();
 
-        _worldPacket.WriteBytes(Data);
+        _worldPacket.WriteBytes(buffer.GetDataSpan());
     }
 
     GameSessionData _gameState;
     public uint NumObjUpdates;
     public ushort MapID;
-    public byte[] Data = Array.Empty<byte>();
 
     public List<WowGuid128> OutOfRangeGuids = new List<WowGuid128>();
     public List<WowGuid128> DestroyedGuids = new List<WowGuid128>();

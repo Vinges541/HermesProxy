@@ -1080,7 +1080,7 @@ public class ObjectUpdateBuilder
                 m_dynamicFields.SetUpdateField<WowGuid128>(UnitDynamicField.UNIT_DYNAMIC_FIELD_CHANNEL_OBJECTS, unitData.ChannelObject.Value, DynamicFieldChangeType.ValueAndSizeChanged);
         }
 
-        PlayerData playerData = m_updateData.PlayerData;
+        PlayerData? playerData = m_updateData.PlayerData;
         if (playerData != null)
         {
             if (playerData.DuelArbiter != null)

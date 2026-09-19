@@ -1,22 +1,24 @@
+﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using BenchmarkDotNet.Attributes;
 using Framework.Cryptography;
-using Framework.IO;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 
 namespace HermesProxy.Benchmarks;
 
 // Outbound path from `new ServerPacket()` to the encrypted wire frame, reproducing
 // WorldSocket.SendPacket minus the socket write and minus the >1KB compression branch
-// (V3_4_3 has no SMSG_COMPRESSED_PACKET mapping, so that branch never runs there).
+// (all three packets here are far below it).
 //
 // Three stages per packet so the cost can be attributed:
-//   *_Construct       ctor only — every ServerPacket rents a 256-byte ByteBuffer it may never use
-//   *_WritePacketData ctor + serialise — ISpanWritable packets still copy into a fresh byte[]
+//   *_Construct       ctor only — nothing is rented until the first write (it used to be 256 B up front)
+//   *_WritePacketData ctor + serialise into a pooled buffer, released as the send path releases it
 //   *_Wire            ctor + serialise + opcode framing + AES-GCM + 16-byte header, as sent
 // *_SpanOnly is the floor: WriteToSpan straight into a caller-owned buffer, nothing else.
 [MemoryDiagnoser]
@@ -81,31 +83,37 @@ public class SendPipelineBenchmarks
 
     private static CriteriaDeletedPkt NewCriteriaDeleted() => new() { CriteriaID = 42 };
 
-    // Mirrors WorldSocket.SendPacket after WritePacketData: opcode framing copy, header
-    // object, AES-GCM in place, header + body copy into the frame handed to Socket.Send.
+    // Mirrors WorldSocket.SendPacket after WritePacketData: opcode + payload laid out behind
+    // the header in one pooled frame, AES-GCM in place, header written in front, then the
+    // serialized bytes released.
     private int Wire(ServerPacket packet)
     {
         packet.WritePacketData();
-        byte[] data = packet.GetData()!;
+        ReadOnlySpan<byte> data = packet.GetDataSpan();
         ushort opcode = (ushort)packet.GetOpcode();
-        int packetSize = data.Length;
 
-        using (ByteBuffer body = new())
-        {
-            body.WriteUInt16(opcode);
-            body.WriteBytes(data);
-            packetSize += 2;
-            data = body.GetData();
-        }
+        int bodySize = ModernPacketBody.PlainSize(data.Length);
+        int framedSize = PacketHeader.StructSize + bodySize;
+        byte[] framed = ArrayPool<byte>.Shared.Rent(framedSize);
+        Span<byte> body = framed.AsSpan(PacketHeader.StructSize, bodySize);
+        ModernPacketBody.WritePlain(body, opcode, data);
 
         PacketHeader header = new();
-        header.Size = packetSize;
-        _crypt.Encrypt(data, header.Tag);
-
-        byte[] framed = new byte[PacketHeader.StructSize + data.Length];
+        header.Size = bodySize;
+        _crypt.Encrypt(body, header.Tag);
         header.Write(framed);
-        data.CopyTo(framed, PacketHeader.StructSize);
-        return framed.Length;
+
+        ArrayPool<byte>.Shared.Return(framed);
+        packet.ReleaseData();
+        return framedSize;
+    }
+
+    private static int Serialize(ServerPacket packet)
+    {
+        packet.WritePacketData();
+        int length = packet.GetDataSpan().Length;
+        packet.ReleaseData();
+        return length;
     }
 
     // ---- PowerUpdate: ISpanWritable, ~30 bytes, fires on every power change ----
@@ -116,9 +124,7 @@ public class SendPipelineBenchmarks
     [Benchmark]
     public int PowerUpdate_WritePacketData()
     {
-        var packet = NewPowerUpdate();
-        packet.WritePacketData();
-        return packet.GetData()!.Length;
+        return Serialize(NewPowerUpdate());
     }
 
     [Benchmark]
@@ -139,9 +145,7 @@ public class SendPipelineBenchmarks
     [Benchmark]
     public int MonsterMove_WritePacketData()
     {
-        var packet = NewMonsterMove();
-        packet.WritePacketData();
-        return packet.GetData()!.Length;
+        return Serialize(NewMonsterMove());
     }
 
     [Benchmark]
@@ -162,9 +166,7 @@ public class SendPipelineBenchmarks
     [Benchmark]
     public int CriteriaDeleted_WritePacketData()
     {
-        var packet = NewCriteriaDeleted();
-        packet.WritePacketData();
-        return packet.GetData()!.Length;
+        return Serialize(NewCriteriaDeleted());
     }
 
     [Benchmark]

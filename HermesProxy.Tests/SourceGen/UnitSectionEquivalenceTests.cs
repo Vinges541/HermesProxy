@@ -127,8 +127,8 @@ public class UnitSectionEquivalenceTests
         unit.GuildGUID = WowGuid128.Create(HighGuidType703.Guild, 99);
 
         // Populate PlayerData VisibleItems for VirtualItems fallback (mainhand at slot 15).
-        update.PlayerData.EnsureVisibleItems()[15] = new VisibleItem(12345, 0, 0); // mainhand
-        update.PlayerData.EnsureVisibleItems()[17] = new VisibleItem(2508, 0, 0);  // ranged → triggers 2300ms fallback for RangedAttackRoundBaseTime
+        update.EnsurePlayerData().EnsureVisibleItems()[15] = new VisibleItem(12345, 0, 0); // mainhand
+        update.EnsurePlayerData().EnsureVisibleItems()[17] = new VisibleItem(2508, 0, 0);  // ranged → triggers 2300ms fallback for RangedAttackRoundBaseTime
 
         var actual = new WorldPacket();
         builder.WriteCreateUnitData(actual);

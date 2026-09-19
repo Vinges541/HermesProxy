@@ -44,10 +44,14 @@ public class ByteBuffer : IDisposable
 
     public ByteBuffer()
     {
-        _buffer = ArrayPool<byte>.Shared.Rent(DefaultWriteCapacity);
+        // No rental until the first write, so a buffer that is never written never holds an array
+        // for the finalizer to hand back. Finalization itself is left registered: suppressing it
+        // here and re-registering on the first write cost two runtime calls on every packet that
+        // does write, and the finalizer is already a no-op without a rental.
+        _buffer = [];
         _position = 0;
         _length = 0;
-        _isPooledBuffer = true;
+        _isPooledBuffer = false;
         _isWriteMode = true;
     }
 
@@ -103,7 +107,7 @@ public class ByteBuffer : IDisposable
         int required = _position + additionalBytes;
         if (required <= _buffer.Length) return;
 
-        int newSize = Math.Max(_buffer.Length * 2, required);
+        int newSize = Math.Max(Math.Max(_buffer.Length * 2, required), DefaultWriteCapacity);
         byte[] newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _length).CopyTo(newBuffer);
 
@@ -947,6 +951,27 @@ public class ByteBuffer : IDisposable
             FlushBits();
 
         return _buffer.AsSpan(_position, _length - _position);
+    }
+
+    /// <summary>
+    /// Hands the written bytes over without copying them: returns the backing array and the
+    /// written length, and leaves this buffer empty. When <paramref name="pooled"/> is true the
+    /// array came from <see cref="ArrayPool{T}.Shared"/> and the caller now owns returning it.
+    /// </summary>
+    public byte[] DetachBuffer(out int length, out bool pooled)
+    {
+        if (_isWriteMode)
+            FlushBits();
+
+        byte[] detached = _buffer;
+        length = _length;
+        pooled = _isPooledBuffer;
+
+        _buffer = [];
+        _position = 0;
+        _length = 0;
+        _isPooledBuffer = false;
+        return detached;
     }
 
     public ReadOnlySpan<byte> GetDataSpan()

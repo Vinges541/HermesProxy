@@ -156,14 +156,14 @@ public class ValuesDeltaFilterTests
     [Fact]
     public void QuestLogEntryAlone_Survives()
     {
-        Assert.True(Survives(Player, u => u.PlayerData.EnsureQuestLog()[0] = new QuestLog { QuestID = 5261 }));
+        Assert.True(Survives(Player, u => u.EnsurePlayerData().EnsureQuestLog()[0] = new QuestLog { QuestID = 5261 }));
     }
 
     /// <summary>Also absent from the hand-written list: a gear swap seen on another player.</summary>
     [Fact]
     public void VisibleItemAlone_Survives()
     {
-        Assert.True(Survives(Player, u => u.PlayerData.EnsureVisibleItems()[0] = new VisibleItem(12640, 0, 0)));
+        Assert.True(Survives(Player, u => u.EnsurePlayerData().EnsureVisibleItems()[0] = new VisibleItem(12640, 0, 0)));
     }
 
     /// <summary>A bag slot emptying — without this the source slot kept a ghost item until relog.</summary>
