@@ -953,6 +953,27 @@ public class ByteBuffer : IDisposable
         return _buffer.AsSpan(_position, _length - _position);
     }
 
+    /// <summary>
+    /// Hands the written bytes over without copying them: returns the backing array and the
+    /// written length, and leaves this buffer empty. When <paramref name="pooled"/> is true the
+    /// array came from <see cref="ArrayPool{T}.Shared"/> and the caller now owns returning it.
+    /// </summary>
+    public byte[] DetachBuffer(out int length, out bool pooled)
+    {
+        if (_isWriteMode)
+            FlushBits();
+
+        byte[] detached = _buffer;
+        length = _length;
+        pooled = _isPooledBuffer;
+
+        _buffer = [];
+        _position = 0;
+        _length = 0;
+        _isPooledBuffer = false;
+        return detached;
+    }
+
     public ReadOnlySpan<byte> GetDataSpan()
     {
         if (_isWriteMode)

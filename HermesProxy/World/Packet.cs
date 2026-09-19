@@ -95,7 +95,7 @@ public abstract class ServerPacket
     public void Clear()
     {
         worldPacket?.Clear();
-        buffer = null;
+        ReleaseData();
     }
 
     public uint GetOpcode()
@@ -107,10 +107,11 @@ public abstract class ServerPacket
         return ModernVersion.GetUniversalOpcode(GetOpcode());
     }
 
-    public byte[]? GetData()
-    {
-        return buffer;
-    }
+    /// <summary>The serialized packet, valid from <see cref="WritePacketData"/> until <see cref="ReleaseData"/>.</summary>
+    public ReadOnlySpan<byte> GetDataSpan() => buffer.AsSpan(0, bufferLength);
+
+    /// <summary>A copy of the serialized packet. The send path reads <see cref="GetDataSpan"/>.</summary>
+    public byte[]? GetData() => buffer?.AsSpan(0, bufferLength).ToArray();
 
     public void LogPacket(ref SniffFile sniffFile, in PacketLogContext context)
     {
@@ -118,11 +119,16 @@ public abstract class ServerPacket
             return;
 
         var sniff = SniffFile.EnsureOpen(ref sniffFile, "modern", (ushort)context.ClientBuild);
-        sniff.WritePacket(GetOpcode(), false, GetData()!);
+        sniff.WritePacket(GetOpcode(), false, GetDataSpan());
     }
 
     public abstract void Write();
 
+    /// <remarks>
+    /// The bytes stay in the pooled array they were written into, and <see cref="ReleaseData"/>
+    /// hands it back once they are on the wire. They used to be copied out into an exact-size
+    /// array for every packet sent, about 30 MB over an 18-minute Alterac Valley.
+    /// </remarks>
     public void WritePacketData()
     {
         if (buffer != null)
@@ -132,53 +138,73 @@ public abstract class ServerPacket
         if (this is ISpanWritable spanWritable)
         {
             byte[] pooledBuffer = ArrayPool<byte>.Shared.Rent(spanWritable.MaxSize);
-            try
-            {
-                int bytesWritten = spanWritable.WriteToSpan(pooledBuffer);
+            int bytesWritten = spanWritable.WriteToSpan(pooledBuffer);
 
-                // Negative return means packet exceeded MaxSize cap, fall back to standard Write()
-                if (bytesWritten < 0)
-                {
-                    PacketLogMessages.SpanMissExceededMaxSize(_melLog, _sourceFile, GetType().Name, spanWritable.MaxSize);
-                    Write();
-                    buffer = _worldPacket.GetData();
-                }
-                else
-                {
-                    PacketLogMessages.SpanStats(_melLog, _sourceFile, GetType().Name, bytesWritten, spanWritable.MaxSize);
-                    buffer = new byte[bytesWritten];
-                    pooledBuffer.AsSpan(0, bytesWritten).CopyTo(buffer);
-                }
-            }
-            finally
+            // Negative return means packet exceeded MaxSize cap, fall back to standard Write()
+            if (bytesWritten < 0)
             {
                 ArrayPool<byte>.Shared.Return(pooledBuffer);
+                PacketLogMessages.SpanMissExceededMaxSize(_melLog, _sourceFile, GetType().Name, spanWritable.MaxSize);
+                Write();
+                TakeWrittenData();
             }
-            worldPacket?.Dispose();
+            else
+            {
+                PacketLogMessages.SpanStats(_melLog, _sourceFile, GetType().Name, bytesWritten, spanWritable.MaxSize);
+                buffer = pooledBuffer;
+                bufferLength = bytesWritten;
+                bufferPooled = true;
+            }
         }
         else
         {
             // Standard path: Use ByteBuffer-based writing
             Write();
-            buffer = _worldPacket.GetData();
-            _worldPacket.Dispose();
+            TakeWrittenData();
         }
+
+        // A later WritePacketData, after ReleaseData, serializes into a fresh one.
+        worldPacket?.Dispose();
+        worldPacket = null;
+    }
+
+    private void TakeWrittenData()
+    {
+        buffer = _worldPacket.DetachBuffer(out bufferLength, out bufferPooled);
     }
 
     /// <summary>
-    /// Releases the pooled buffer of a packet that will never be sent.
+    /// Returns the serialized bytes to the pool. Called once they are on the wire; a packet that is
+    /// sent again serializes itself again.
+    /// </summary>
+    public void ReleaseData()
+    {
+        if (buffer != null && bufferPooled)
+            ArrayPool<byte>.Shared.Return(buffer);
+        buffer = null;
+        bufferLength = 0;
+        bufferPooled = false;
+    }
+
+    /// <summary>
+    /// Releases the pooled buffers of a packet that will never be sent.
     /// </summary>
     /// <remarks>
-    /// The buffer is rented on the first write into <see cref="_worldPacket"/>, and it is
-    /// <see cref="WritePacketData"/> that gives it back. A packet dropped after writing but
-    /// before sending - the socket closed in between - would otherwise reach the pool only through
-    /// ~ByteBuffer. Safe to call twice; ByteBuffer.Dispose is idempotent.
+    /// A packet dropped before it is written holds the rental of its first write into
+    /// <see cref="_worldPacket"/>; one dropped after writing but before sending - the socket closed
+    /// in between, or a park that expired - holds its serialized bytes. Safe to call twice.
     /// </remarks>
-    public void Discard() => worldPacket?.Dispose();
+    public void Discard()
+    {
+        worldPacket?.Dispose();
+        ReleaseData();
+    }
 
     public ConnectionType GetConnection() { return connectionType; }
 
     byte[]? buffer;
+    int bufferLength;
+    bool bufferPooled;
     ConnectionType connectionType;
     readonly uint opcode;
     WorldPacket? worldPacket;

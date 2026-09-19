@@ -67,43 +67,51 @@ public class MonsterMove : ServerPacket, ISpanWritable
     {
         if (moveSpline.SplineFlags.HasFlag(SplineFlagModern.UncompressedPath))
         {
-            // Sized up front: growing a list from empty point by point allocated and copied a
-            // chain of arrays per packet, 27 MB over an 18-minute Alterac Valley.
-            Points.EnsureCapacity(moveSpline.SplinePoints.Count + 1);
-            if (!moveSpline.SplineFlags.HasFlag(SplineFlagModern.Cyclic))
-            {
-                foreach (var point in moveSpline.SplinePoints)
-                    Points.Add(point);
-
-                if (moveSpline.EndPosition != Vector3.Zero)
-                    Points.Add(moveSpline.EndPosition);
-            }
-            else
-            {
-                if (moveSpline.EndPosition != Vector3.Zero)
-                    Points.Add(moveSpline.EndPosition);
-
-                foreach (var point in moveSpline.SplinePoints)
-                    Points.Add(point);
-            }
+            _layout = moveSpline.SplineFlags.HasFlag(SplineFlagModern.Cyclic) ? PointLayout.CyclicPath : PointLayout.Path;
+            _pathHasEnd = moveSpline.EndPosition != Vector3.Zero;
         }
         else if (moveSpline.EndPosition != Vector3.Zero)
-        {
-            Points.Add(moveSpline.EndPosition);
+            _layout = moveSpline.SplinePoints.Count > 0 ? PointLayout.EndWithDeltas : PointLayout.End;
 
-            if (moveSpline.SplinePoints.Count > 0)
-            {
-                PackedDeltas.EnsureCapacity(moveSpline.SplinePoints.Count);
-                Vector3 middle = (moveSpline.StartPosition + moveSpline.EndPosition) / 2.0f;
-
-                // first and last points already appended
-                for (int i = 0; i < moveSpline.SplinePoints.Count; ++i)
-                    PackedDeltas.Add(middle - moveSpline.SplinePoints[i]);
-            }
-        }
         MoverGUID = guid;
         MoveSpline = moveSpline;
     }
+
+    // Which of the spline's positions go on the wire, and how, is decided here once. The positions
+    // themselves are read from MoveSpline as the packet is written: copying them into a points
+    // list and a deltas list first cost two lists and their arrays per packet, ~15 MB over an
+    // 18-minute Alterac Valley.
+    private enum PointLayout : byte
+    {
+        None,
+        Path,          // the spline's points, then the end position when there is one
+        CyclicPath,    // the end position when there is one, then the spline's points
+        End,           // the end position alone
+        EndWithDeltas, // the end position, each spline point packed as a delta from the midpoint
+    }
+
+    private readonly PointLayout _layout;
+    private readonly bool _pathHasEnd;
+
+    public int PointCount => _layout switch
+    {
+        PointLayout.Path or PointLayout.CyclicPath => MoveSpline.SplinePoints.Count + (_pathHasEnd ? 1 : 0),
+        PointLayout.End or PointLayout.EndWithDeltas => 1,
+        _ => 0,
+    };
+
+    public Vector3 Point(int index) => _layout switch
+    {
+        PointLayout.Path => index < MoveSpline.SplinePoints.Count ? MoveSpline.SplinePoints[index] : MoveSpline.EndPosition,
+        PointLayout.CyclicPath when _pathHasEnd => index == 0 ? MoveSpline.EndPosition : MoveSpline.SplinePoints[index - 1],
+        PointLayout.CyclicPath => MoveSpline.SplinePoints[index],
+        _ => MoveSpline.EndPosition,
+    };
+
+    public int PackedDeltaCount => _layout == PointLayout.EndWithDeltas ? MoveSpline.SplinePoints.Count : 0;
+
+    public Vector3 PackedDelta(int index) =>
+        (MoveSpline.StartPosition + MoveSpline.EndPosition) / 2.0f - MoveSpline.SplinePoints[index];
 
     public override void Write()
     {
@@ -113,7 +121,7 @@ public class MonsterMove : ServerPacket, ISpanWritable
         _worldPacket.WriteUInt32(MoveSpline.SplineId);
         _worldPacket.WriteVector3(Vector3.Zero); // Destination
         _worldPacket.WriteBit(false); // CrzTeleport
-        _worldPacket.WriteBits(Points.Count == 0 ? 2 : 0, 3); // StopDistanceTolerance
+        _worldPacket.WriteBits(PointCount == 0 ? 2 : 0, 3); // StopDistanceTolerance
 
         _worldPacket.WriteUInt32((uint)MoveSpline.SplineFlags);
         _worldPacket.WriteInt32(0); // Elapsed
@@ -123,10 +131,10 @@ public class MonsterMove : ServerPacket, ISpanWritable
         _worldPacket.WritePackedGuid128(MoveSpline.TransportGuid); // != default ? MoveSpline.TransportGuid : WowGuid128.Empty
         _worldPacket.WriteInt8(MoveSpline.TransportSeat);
         _worldPacket.WriteBits((byte)MoveSpline.SplineType, 2);
-        _worldPacket.WriteBits(Points.Count, 16);
+        _worldPacket.WriteBits(PointCount, 16);
         _worldPacket.WriteBit(false); // VehicleExitVoluntary ;
         _worldPacket.WriteBit(false); // Interpolate
-        _worldPacket.WriteBits(PackedDeltas.Count, 16);
+        _worldPacket.WriteBits(PackedDeltaCount, 16);
         _worldPacket.WriteBit(false); // SplineFilter.HasValue
         _worldPacket.WriteBit(false); // SpellEffectExtraData.HasValue
         _worldPacket.WriteBit(false); // JumpExtraData.HasValue
@@ -155,11 +163,11 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 break;
         }
 
-        foreach (Vector3 pos in Points)
-            _worldPacket.WriteVector3(pos);
+        for (int i = 0; i < PointCount; i++)
+            _worldPacket.WriteVector3(Point(i));
 
-        foreach (Vector3 pos in PackedDeltas)
-            _worldPacket.WritePackXYZ(pos);
+        for (int i = 0; i < PackedDeltaCount; i++)
+            _worldPacket.WritePackXYZ(PackedDelta(i));
 
         /*
         if (SpellEffectExtraData.HasValue)
@@ -175,7 +183,7 @@ public class MonsterMove : ServerPacket, ISpanWritable
             Log.Print(LogType.Server,
                 $"[MonsterMove/Write] v{ModernVersion.ExpansionVersion} mover=0x{MoverGUID.Low:X} entry={MoverGUID.GetEntry()} " +
                 $"face={MoveSpline.SplineType} flags=0x{(uint)MoveSpline.SplineFlags:X8} mode={MoveSpline.SplineMode} " +
-                $"pts={Points.Count} deltas={PackedDeltas.Count} " +
+                $"pts={PointCount} deltas={PackedDeltaCount} " +
                 $"orient={MoveSpline.FinalOrientation:F3} faceGuid=0x{MoveSpline.FinalFacingGuid.Low:X} " +
                 $"wire={_worldPacket.GetSize()}B");
     }
@@ -184,17 +192,17 @@ public class MonsterMove : ServerPacket, ISpanWritable
     // SplineType FacingTarget (worst case, V2_5+): float(4) + GUID(18) = 22
     private const int FixedSize = 88 + 22; // 110 bytes
 
-    // Sized from this packet's own spline: Points write as Vector3 (12 B), PackedDeltas as
-    // PackXYZ (4 B) -- see WriteToSpan. Both lists are filled in the constructor, so the count
-    // is known before WritePacketData rents. ArrayPool rounds the rent up to its bucket, so
+    // Sized from this packet's own spline: points write as Vector3 (12 B), packed deltas as
+    // PackXYZ (4 B) -- see WriteToSpan. Both counts are known from the spline before
+    // WritePacketData rents. ArrayPool rounds the rent up to its bucket, so
     // exact sizing costs nothing versus a constant and never under-provisions.
-    public int MaxSize => FixedSize + Points.Count * 12 + PackedDeltas.Count * 4;
+    public int MaxSize => FixedSize + PointCount * 12 + PackedDeltaCount * 4;
 
     public int WriteToSpan(Span<byte> buffer)
     {
         // Only a corrupt or hostile SplineCount should land here; MaxSize already sized the
         // buffer for this spline's real length.
-        if (Points.Count > MaxSplinePoints || PackedDeltas.Count > MaxSplinePoints)
+        if (PointCount > MaxSplinePoints || PackedDeltaCount > MaxSplinePoints)
             return -1;
 
         var writer = new SpanPacketWriter(buffer);
@@ -205,7 +213,7 @@ public class MonsterMove : ServerPacket, ISpanWritable
         writer.WriteUInt32(MoveSpline.SplineId);
         writer.WriteVector3(Vector3.Zero); // Destination
         writer.WriteBit(false); // CrzTeleport
-        writer.WriteBits((uint)(Points.Count == 0 ? 2 : 0), 3); // StopDistanceTolerance
+        writer.WriteBits((uint)(PointCount == 0 ? 2 : 0), 3); // StopDistanceTolerance
 
         writer.WriteUInt32((uint)MoveSpline.SplineFlags);
         writer.WriteInt32(0); // Elapsed
@@ -215,10 +223,10 @@ public class MonsterMove : ServerPacket, ISpanWritable
         writer.WritePackedGuid128(MoveSpline.TransportGuid.Low, MoveSpline.TransportGuid.High);
         writer.WriteInt8(MoveSpline.TransportSeat);
         writer.WriteBits((uint)MoveSpline.SplineType, 2);
-        writer.WriteBits((uint)Points.Count, 16);
+        writer.WriteBits((uint)PointCount, 16);
         writer.WriteBit(false); // VehicleExitVoluntary
         writer.WriteBit(false); // Interpolate
-        writer.WriteBits((uint)PackedDeltas.Count, 16);
+        writer.WriteBits((uint)PackedDeltaCount, 16);
         writer.WriteBit(false); // SplineFilter.HasValue
         writer.WriteBit(false); // SpellEffectExtraData.HasValue
         writer.WriteBit(false); // JumpExtraData.HasValue
@@ -239,18 +247,18 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 break;
         }
 
-        foreach (Vector3 pos in Points)
-            writer.WriteVector3(pos);
+        for (int i = 0; i < PointCount; i++)
+            writer.WriteVector3(Point(i));
 
-        foreach (Vector3 pos in PackedDeltas)
-            writer.WritePackXYZ(pos);
+        for (int i = 0; i < PackedDeltaCount; i++)
+            writer.WritePackXYZ(PackedDelta(i));
 
         // Opt-in wire trace — see Write() above.
         if (MovementTrace.Enabled)
             Log.Print(LogType.Server,
                 $"[MonsterMove/Span ] v{ModernVersion.ExpansionVersion} mover=0x{MoverGUID.Low:X} entry={MoverGUID.GetEntry()} " +
                 $"face={MoveSpline.SplineType} flags=0x{(uint)MoveSpline.SplineFlags:X8} mode={MoveSpline.SplineMode} " +
-                $"pts={Points.Count} deltas={PackedDeltas.Count} " +
+                $"pts={PointCount} deltas={PackedDeltaCount} " +
                 $"orient={MoveSpline.FinalOrientation:F3} faceGuid=0x{MoveSpline.FinalFacingGuid.Low:X} " +
                 $"wire={writer.Position}B");
 
@@ -259,8 +267,6 @@ public class MonsterMove : ServerPacket, ISpanWritable
 
     public WowGuid128 MoverGUID;
     public ServerSideMovement MoveSpline;
-    public List<Vector3> Points = new();
-    public List<Vector3> PackedDeltas = new();
 }
 
 public readonly record struct MoveTeleportAck(WowGuid128 MoverGUID, uint MoveCounter, uint MoveTime);

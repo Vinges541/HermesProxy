@@ -675,7 +675,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             if (GetSession() != null)
                 packet.LogPacket(ref GetSession().ModernSniff, GetSession().PacketLogContext);
 
-            var data = packet.GetData()!;
+            ReadOnlySpan<byte> data = packet.GetDataSpan();
             Opcode universalOpcode = packet.GetUniversalOpcode();
             ushort opcode = (ushort)packet.GetOpcode();
 
@@ -700,7 +700,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             record.Size = data.Length;
             record.PreviewLength = (byte)hexBytes;
             if (hexBytes > 0)
-                data.AsSpan(0, hexBytes).CopyTo(_recentSentPreview.AsSpan(slot * RecentSentHexPreviewBytes, hexBytes));
+                data[..hexBytes].CopyTo(_recentSentPreview.AsSpan(slot * RecentSentHexPreviewBytes, hexBytes));
 
             _recentSentHead = (_recentSentHead + 1) % RecentSentCap;
             if (_recentSentCount < RecentSentCap)
@@ -755,6 +755,9 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 ArrayPool<byte>.Shared.Return(framed);
             }
         }
+
+        // On the wire (or lost with the socket): the serialized bytes can go back to the pool.
+        packet.ReleaseData();
     }
 
     /// <summary>

@@ -56,15 +56,24 @@ public class SessionExecutorTests
     public void PostFromInsideAnEvent_RunsAfterTheCurrentOneFinishes()
     {
         using var executor = new SessionExecutor("test");
-        var order = new List<string>();
+        using var innerRan = new ManualResetEventSlim();
+        var order = new ConcurrentQueue<string>();
 
         executor.Post(_ =>
         {
-            order.Add("outer start");
-            executor.Post(_ => order.Add("inner"));
-            order.Add("outer end");
+            order.Enqueue("outer start");
+            executor.Post(_ =>
+            {
+                order.Enqueue("inner");
+                innerRan.Set();
+            });
+            order.Enqueue("outer end");
         });
 
+        // Usually the inner event runs inline before Post returns, but a drain that outlives
+        // DrainSlice (2 ms, easy to exceed on a loaded test run) hands the rest to the thread pool.
+        // The ordering is what this pins, not where it ran.
+        Assert.True(innerRan.Wait(TimeSpan.FromSeconds(5)));
         Assert.Equal(["outer start", "outer end", "inner"], order);
     }
 

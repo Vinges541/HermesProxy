@@ -48,8 +48,8 @@ public class MonsterMoveConstructorTests
         var packet = new MonsterMove(TestGuid, spline);
 
         // SplinePoints + EndPosition
-        Assert.Equal(3, packet.Points.Count);
-        Assert.Empty(packet.PackedDeltas);
+        Assert.Equal(3, packet.PointCount);
+        Assert.Equal(0, packet.PackedDeltaCount);
     }
 
     [Fact]
@@ -65,10 +65,10 @@ public class MonsterMoveConstructorTests
         var packet = new MonsterMove(TestGuid, spline);
 
         // EndPosition added as point
-        Assert.Single(packet.Points);
-        Assert.Equal(spline.EndPosition, packet.Points[0]);
+        Assert.Equal(1, packet.PointCount);
+        Assert.Equal(spline.EndPosition, packet.Point(0));
         // Deltas calculated from midpoint
-        Assert.Equal(2, packet.PackedDeltas.Count);
+        Assert.Equal(2, packet.PackedDeltaCount);
     }
 
     [Fact]
@@ -80,8 +80,8 @@ public class MonsterMoveConstructorTests
 
         var packet = new MonsterMove(TestGuid, spline);
 
-        Assert.Empty(packet.Points);
-        Assert.Empty(packet.PackedDeltas);
+        Assert.Equal(0, packet.PointCount);
+        Assert.Equal(0, packet.PackedDeltaCount);
     }
 }
 
@@ -221,5 +221,86 @@ public class MonsterMoveWriteTests
 
         Assert.True(written > 0);
         Assert.True(written <= packet.MaxSize);
+    }
+}
+
+/// <summary>
+/// MonsterMove used to copy the spline into Points and PackedDeltas lists in its constructor;
+/// it now reads the spline as it writes. The sequences must be exactly what those lists held.
+/// </summary>
+public class MonsterMoveLayoutTests
+{
+    // The constructor body that built the two lists, verbatim.
+    private static (List<Vector3> Points, List<Vector3> Deltas) Reference(ServerSideMovement moveSpline)
+    {
+        var points = new List<Vector3>();
+        var deltas = new List<Vector3>();
+        if (moveSpline.SplineFlags.HasFlag(SplineFlagModern.UncompressedPath))
+        {
+            if (!moveSpline.SplineFlags.HasFlag(SplineFlagModern.Cyclic))
+            {
+                foreach (var point in moveSpline.SplinePoints)
+                    points.Add(point);
+                if (moveSpline.EndPosition != Vector3.Zero)
+                    points.Add(moveSpline.EndPosition);
+            }
+            else
+            {
+                if (moveSpline.EndPosition != Vector3.Zero)
+                    points.Add(moveSpline.EndPosition);
+                foreach (var point in moveSpline.SplinePoints)
+                    points.Add(point);
+            }
+        }
+        else if (moveSpline.EndPosition != Vector3.Zero)
+        {
+            points.Add(moveSpline.EndPosition);
+            if (moveSpline.SplinePoints.Count > 0)
+            {
+                Vector3 middle = (moveSpline.StartPosition + moveSpline.EndPosition) / 2.0f;
+                for (int i = 0; i < moveSpline.SplinePoints.Count; ++i)
+                    deltas.Add(middle - moveSpline.SplinePoints[i]);
+            }
+        }
+        return (points, deltas);
+    }
+
+    public static TheoryData<SplineFlagModern, bool, int> Shapes()
+    {
+        SplineFlagModern[] layouts = [SplineFlagModern.None, SplineFlagModern.UncompressedPath,
+                                      SplineFlagModern.UncompressedPath | SplineFlagModern.Cyclic, SplineFlagModern.Cyclic];
+        bool[] ends = [false, true];
+        int[] counts = [0, 1, 5];
+
+        var data = new TheoryData<SplineFlagModern, bool, int>();
+        foreach (var flags in layouts)
+            foreach (bool hasEnd in ends)
+                foreach (int count in counts)
+                    data.Add(flags, hasEnd, count);
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(Shapes))]
+    public void PointsAndDeltas_MatchTheListsTheConstructorBuilt(SplineFlagModern flags, bool hasEnd, int count)
+    {
+        var spline = new ServerSideMovement
+        {
+            SplineFlags = flags,
+            StartPosition = new Vector3(100f, 200f, 300f),
+            EndPosition = hasEnd ? new Vector3(113.5f, 207.25f, 299f) : Vector3.Zero,
+        };
+        for (int i = 0; i < count; i++)
+            spline.SplinePoints.Add(new Vector3(101f + i * 1.7f, 202f - i * 0.3f, 303f + i));
+
+        var packet = new MonsterMove(WowGuid128.Create(HighGuidType703.Creature, 0, 1234, 1), spline);
+        var (points, deltas) = Reference(spline);
+
+        Assert.Equal(points.Count, packet.PointCount);
+        for (int i = 0; i < points.Count; i++)
+            Assert.Equal(points[i], packet.Point(i));
+        Assert.Equal(deltas.Count, packet.PackedDeltaCount);
+        for (int i = 0; i < deltas.Count; i++)
+            Assert.Equal(deltas[i], packet.PackedDelta(i));
     }
 }
